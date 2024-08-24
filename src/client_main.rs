@@ -3,7 +3,7 @@ use futures::{SinkExt, StreamExt};
 use redis::{
     client::cli::{Args, Commands, OptTTL},
     common::{
-        protocol::{Request, RequestCodec, TTL},
+        protocol::{ProtocolCodec, Request, TTL},
         resp3::RESP3Value,
     },
 };
@@ -17,7 +17,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let addr = format!("{}:{}", args.host, args.port);
 
     let tcp = TcpStream::connect(addr).await?;
-    let (mut sink, mut stream) = Framed::new(tcp, RequestCodec).split();
+    let (mut sink, mut stream) = Framed::new(tcp, ProtocolCodec).split();
 
     match args.command {
         Commands::Ping => {

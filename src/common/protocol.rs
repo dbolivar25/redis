@@ -21,9 +21,9 @@ pub enum TTL {
     Persist,
 }
 
-pub struct RequestCodec;
+pub struct ProtocolCodec;
 
-impl Encoder<Request> for RequestCodec {
+impl Encoder<Request> for ProtocolCodec {
     type Error = io::Error;
 
     fn encode(&mut self, item: Request, dst: &mut BytesMut) -> Result<(), Self::Error> {
@@ -33,8 +33,8 @@ impl Encoder<Request> for RequestCodec {
     }
 }
 
-impl Decoder for RequestCodec {
-    type Item = Request;
+impl Decoder for ProtocolCodec {
+    type Item = RESP3Value;
     type Error = io::Error;
 
     fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
@@ -42,13 +42,15 @@ impl Decoder for RequestCodec {
             return Ok(None);
         }
 
-        match decode_request(src) {
-            Ok((request, rest)) => {
+        match decode_resp3(src) {
+            Ok((resp3, rest)) => {
                 let len = src.len() - rest.len();
                 src.advance(len);
-                Ok(Some(request))
+                Ok(Some(resp3))
             }
-            Err(e) => Err(io::Error::new(io::ErrorKind::InvalidData, e)),
+            Err(e) => {
+                return Err(io::Error::new(io::ErrorKind::InvalidData, e));
+            }
         }
     }
 }
@@ -56,14 +58,14 @@ impl Decoder for RequestCodec {
 pub fn encode_request(request: &Request) -> Vec<u8> {
     match request {
         Request::Ping => {
-            let resp3 = RESP3Value::SimpleString("PING".to_string());
+            let resp3 = RESP3Value::Array(vec![RESP3Value::BulkString(b"PING".to_vec())]);
 
             let encoded = encode_resp3(&resp3);
             encoded.into_bytes()
         }
         Request::Echo(message) => {
             let resp3 = RESP3Value::Array(vec![
-                RESP3Value::SimpleString("ECHO".to_string()),
+                RESP3Value::BulkString(b"ECHO".to_vec()),
                 message.clone(),
             ]);
 
@@ -77,14 +79,14 @@ pub fn encode_request(request: &Request) -> Vec<u8> {
                     key.clone(),
                     value.clone(),
                     RESP3Value::BulkString(b"PX".to_vec()),
-                    RESP3Value::Integer(*ms),
+                    RESP3Value::BulkString(ms.to_string().into_bytes()),
                 ]),
                 TTL::Seconds(s) => RESP3Value::Array(vec![
                     RESP3Value::BulkString(b"SET".to_vec()),
                     key.clone(),
                     value.clone(),
                     RESP3Value::BulkString(b"EX".to_vec()),
-                    RESP3Value::Integer(*s),
+                    RESP3Value::BulkString(s.to_string().into_bytes()),
                 ]),
                 TTL::Persist => RESP3Value::Array(vec![
                     RESP3Value::BulkString(b"SET".to_vec()),
