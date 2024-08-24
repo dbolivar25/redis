@@ -21,9 +21,9 @@ pub enum TTL {
     Persist,
 }
 
-pub struct ProtocolCodec;
+pub struct ClientProtoCodec;
 
-impl Encoder<Request> for ProtocolCodec {
+impl Encoder<Request> for ClientProtoCodec {
     type Error = io::Error;
 
     fn encode(&mut self, item: Request, dst: &mut BytesMut) -> Result<(), Self::Error> {
@@ -33,7 +33,7 @@ impl Encoder<Request> for ProtocolCodec {
     }
 }
 
-impl Decoder for ProtocolCodec {
+impl Decoder for ClientProtoCodec {
     type Item = RESP3Value;
     type Error = io::Error;
 
@@ -47,6 +47,40 @@ impl Decoder for ProtocolCodec {
                 let len = src.len() - rest.len();
                 src.advance(len);
                 Ok(Some(resp3))
+            }
+            Err(e) => {
+                return Err(io::Error::new(io::ErrorKind::InvalidData, e));
+            }
+        }
+    }
+}
+
+pub struct ServerProtoCodec;
+
+impl Encoder<RESP3Value> for ServerProtoCodec {
+    type Error = io::Error;
+
+    fn encode(&mut self, item: RESP3Value, dst: &mut BytesMut) -> Result<(), Self::Error> {
+        let encoded = encode_resp3(&item);
+        dst.extend_from_slice(encoded.as_bytes());
+        Ok(())
+    }
+}
+
+impl Decoder for ServerProtoCodec {
+    type Item = Request;
+    type Error = io::Error;
+
+    fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
+        if src.is_empty() {
+            return Ok(None);
+        }
+
+        match decode_request(src) {
+            Ok((request, rest)) => {
+                let len = src.len() - rest.len();
+                src.advance(len);
+                Ok(Some(request))
             }
             Err(e) => {
                 return Err(io::Error::new(io::ErrorKind::InvalidData, e));

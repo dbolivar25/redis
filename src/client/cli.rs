@@ -37,7 +37,7 @@ pub enum Commands {
         value: String,
         /// Time-to-live options
         #[clap(subcommand)]
-        ttl: Option<OptTTL>,
+        ttl: Option<TTLOpt>,
     },
 
     /// Get a key
@@ -55,7 +55,7 @@ pub enum Commands {
 
 /// Time-to-live options for SET command
 #[derive(Subcommand, Debug)]
-pub enum OptTTL {
+pub enum TTLOpt {
     /// Time to live in seconds
     Ex { seconds: i64 },
 

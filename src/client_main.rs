@@ -1,9 +1,9 @@
 use clap::Parser;
 use futures::{SinkExt, StreamExt};
 use redis::{
-    client::cli::{Args, Commands, OptTTL},
+    client::cli::{Args, Commands, TTLOpt},
     common::{
-        protocol::{ProtocolCodec, Request, TTL},
+        protocol::{ClientProtoCodec, Request, TTL},
         resp3::RESP3Value,
     },
 };
@@ -17,7 +17,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let addr = format!("{}:{}", args.host, args.port);
 
     let tcp = TcpStream::connect(addr).await?;
-    let (mut sink, mut stream) = Framed::new(tcp, ProtocolCodec).split();
+    let (mut sink, mut stream) = Framed::new(tcp, ClientProtoCodec).split();
 
     match args.command {
         Commands::Ping => {
@@ -39,8 +39,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Commands::Set { key, value, ttl } => {
             let ttl = match ttl {
                 Some(ttl) => match ttl {
-                    OptTTL::Ex { seconds } => TTL::Seconds(seconds),
-                    OptTTL::Px { milliseconds } => TTL::Milliseconds(milliseconds),
+                    TTLOpt::Ex { seconds } => TTL::Seconds(seconds),
+                    TTLOpt::Px { milliseconds } => TTL::Milliseconds(milliseconds),
                 },
                 None => TTL::Persist,
             };
