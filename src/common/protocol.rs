@@ -7,6 +7,7 @@ use super::resp3::{decode_resp3, encode_resp3, RESP3Value};
 
 #[derive(Debug, PartialEq)]
 pub enum Request {
+    // Hello,
     Ping,
     Echo(RESP3Value),
     Set(RESP3Value, RESP3Value, TTL),
@@ -14,10 +15,10 @@ pub enum Request {
     Del(RESP3Value),
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum TTL {
-    Milliseconds(i64),
-    Seconds(i64),
+    Milliseconds(u64),
+    Seconds(u64),
     Persist,
 }
 
@@ -220,7 +221,7 @@ fn decode_ttl(ttl_type: &RESP3Value, ttl_value: &RESP3Value) -> Result<TTL> {
     };
 
     let ttl_value = match ttl_value {
-        RESP3Value::Integer(n) => *n,
+        RESP3Value::BulkString(s) => String::from_utf8_lossy(s).parse::<u64>()?,
         _ => bail!("Invalid TTL value"),
     };
 

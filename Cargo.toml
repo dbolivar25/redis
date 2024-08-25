@@ -8,23 +8,18 @@ clap = { version = "4.5.16", features = ["derive"] }
 itertools = "0.13.0"
 futures = "0.3.30"
 tokio = { version = "1.39.2", features = ["full"] }
-prost = "0.12"
-tonic = "0.11"
-tonic-health = { version = "0.11", features = ["transport"] }
-tonic-reflection = "0.11"
-tower = "0.4.13"
-dashmap = { version = "6.0.1", features = ["rayon"] }
-anyhow = { version = "1.0.86", features = ["backtrace"] }
+anyhow = { version = "1.0.86" }
 tokio-util = { version = "0.7.11", features = ["codec"] }
 bytes = "1.7.1"
 
-[build-dependencies]
-tonic-build = "0.11"
-
 [[bin]]
-name = "redis_server"
+name = "redis"
 path = "src/server_main.rs"
 
 [[bin]]
-name = "redis_client"
-path = "src/client_main.rs"
+name = "redis_cli"
+path = "src/cli_client_main.rs"
+
+[[bin]]
+name = "redis_tui"
+path = "src/tui_client_main.rs"

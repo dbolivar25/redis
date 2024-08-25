@@ -7,7 +7,7 @@ use redis::{
         resp3::RESP3Value,
     },
 };
-use tokio::net::TcpStream;
+use tokio::{net::TcpStream, time::Instant};
 use tokio_util::codec::Framed;
 
 #[tokio::main]
@@ -23,25 +23,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Commands::Ping => {
             let request = Request::Ping;
 
+            let start = Instant::now();
             sink.send(request).await?;
             let response = stream.next().await;
+            let time = start.elapsed();
 
-            println!("{:?}", response);
+            println!("{:?} in {:?}", response, time);
         }
         Commands::Echo { message } => {
             let request = Request::Echo(RESP3Value::BulkString(message.into_bytes()));
 
+            let start = Instant::now();
             sink.send(request).await?;
             let response = stream.next().await;
+            let time = start.elapsed();
 
-            println!("{:?}", response);
+            println!("{:?} in {:?}", response, time);
         }
         Commands::Set { key, value, ttl } => {
             let ttl = match ttl {
-                Some(ttl) => match ttl {
-                    TTLOpt::Ex { seconds } => TTL::Seconds(seconds),
-                    TTLOpt::Px { milliseconds } => TTL::Milliseconds(milliseconds),
-                },
+                Some(TTLOpt::Ex { seconds }) => TTL::Seconds(seconds),
+                Some(TTLOpt::Px { milliseconds }) => TTL::Milliseconds(milliseconds),
                 None => TTL::Persist,
             };
             let request = Request::Set(
@@ -50,26 +52,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ttl,
             );
 
+            let start = Instant::now();
             sink.send(request).await?;
             let response = stream.next().await;
+            let time = start.elapsed();
 
-            println!("{:?}", response);
+            println!("{:?} in {:?}", response, time);
         }
         Commands::Get { key } => {
             let request = Request::Get(RESP3Value::BulkString(key.into_bytes()));
 
+            let start = Instant::now();
             sink.send(request).await?;
             let response = stream.next().await;
+            let time = start.elapsed();
 
-            println!("{:?}", response);
+            println!("{:?} in {:?}", response, time);
         }
         Commands::Del { key } => {
             let request = Request::Del(RESP3Value::BulkString(key.into_bytes()));
 
+            let start = Instant::now();
             sink.send(request).await?;
             let response = stream.next().await;
+            let time = start.elapsed();
 
-            println!("{:?}", response);
+            println!("{:?} in {:?}", response, time);
         }
     }
 

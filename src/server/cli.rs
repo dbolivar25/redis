@@ -5,7 +5,7 @@ use clap::Parser;
 #[clap(version, author = "Daniel Bolivar")]
 pub struct Args {
     /// Host to listen on
-    #[clap(long, default_value = "localhost")]
+    #[clap(long, default_value = "127.0.0.1")]
     pub host: String,
 
     /// Port to listen on

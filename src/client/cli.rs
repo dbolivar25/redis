@@ -6,7 +6,7 @@ use clap::Subcommand;
 #[clap(version, author = "Daniel Bolivar")]
 pub struct Args {
     /// Host of the server
-    #[clap(long, default_value = "localhost")]
+    #[clap(long, default_value = "127.0.0.1")]
     pub host: String,
 
     /// Port of the server
@@ -57,8 +57,8 @@ pub enum Commands {
 #[derive(Subcommand, Debug)]
 pub enum TTLOpt {
     /// Time to live in seconds
-    Ex { seconds: i64 },
+    Ex { seconds: u64 },
 
     /// Time to live in milliseconds
-    Px { milliseconds: i64 },
+    Px { milliseconds: u64 },
 }
