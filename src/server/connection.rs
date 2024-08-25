@@ -53,7 +53,7 @@ pub async fn handle(
                 let res = kv_store.del(key).await;
 
                 match res {
-                    Ok(value) => value.unwrap_or(RESP3Value::Null),
+                    Ok(_) => RESP3Value::SimpleString("OK".to_string()),
                     Err(err) => {
                         eprintln!("Failed to del key: {:?}", err);
                         continue;
@@ -67,4 +67,6 @@ pub async fn handle(
             .await
             .inspect_err(|err| eprintln!("Failed to send response: {:?}", err));
     }
+
+    eprintln!("Connection closed");
 }

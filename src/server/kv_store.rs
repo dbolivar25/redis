@@ -24,7 +24,7 @@ pub enum KVStoreMessage {
     },
     Del {
         key: Key,
-        respond_to: oneshot::Sender<Option<RESP3Value>>,
+        // respond_to: oneshot::Sender<Option<RESP3Value>>,
     },
 }
 
@@ -43,7 +43,7 @@ impl KVStore {
                 value,
                 // respond_to,
             } => {
-                self.kv_store.insert(key, value);
+                let _old_value = self.kv_store.insert(key, value);
                 // let _ = respond_to
                 //     .send(())
                 //     .inspect_err(|err| eprintln!("Failed to send response: {:?}", err));
@@ -58,19 +58,19 @@ impl KVStore {
                 }
 
                 let value = value.map(|(value, _)| value);
-
                 let _ = respond_to
                     .send(value)
                     .inspect_err(|err| eprintln!("Failed to send response: {:?}", err));
             }
-            KVStoreMessage::Del { key, respond_to } => {
-                let value = self.kv_store.remove(&key);
-
-                let value = value.map(|(value, _)| value);
-
-                let _ = respond_to
-                    .send(value)
-                    .inspect_err(|err| eprintln!("Failed to send response: {:?}", err));
+            KVStoreMessage::Del {
+                key,
+                // respond_to
+            } => {
+                let _old_value = self.kv_store.remove(&key);
+                // let old_value = old_value.map(|(value, _)| value);
+                // let _ = respond_to
+                //     .send(old_value)
+                //     .inspect_err(|err| eprintln!("Failed to send response: {:?}", err));
             }
         }
     }
@@ -125,13 +125,14 @@ impl KVStoreHandle {
         Ok(recv.await?)
     }
 
-    pub async fn del(&self, key: Key) -> Result<Option<RESP3Value>> {
-        let (send, recv) = oneshot::channel();
+    pub async fn del(&self, key: Key) -> Result<()> {
+        // let (send, recv) = oneshot::channel();
         let msg = KVStoreMessage::Del {
             key,
-            respond_to: send,
+            // respond_to: send,
         };
         self.sender.send(msg).await?;
-        Ok(recv.await?)
+        // recv.await?;
+        Ok(())
     }
 }
