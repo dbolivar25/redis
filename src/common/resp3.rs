@@ -1,6 +1,7 @@
-use std::str;
+use std::{fmt::Display, str};
 
 use anyhow::{anyhow, bail, Result};
+use itertools::Itertools;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum RESP3Value {
@@ -10,6 +11,22 @@ pub enum RESP3Value {
     BulkString(Vec<u8>),
     Array(Vec<RESP3Value>),
     Null,
+}
+
+impl Display for RESP3Value {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RESP3Value::SimpleString(s) => write!(f, "\"{}\"", s),
+            RESP3Value::SimpleError(s) => write!(f, "Error: \"{}\"", s),
+            RESP3Value::Integer(n) => write!(f, "{}", n),
+            RESP3Value::BulkString(data) => write!(f, "\"{}\"", data.escape_ascii()),
+            RESP3Value::Array(data) => {
+                let values = data.iter().map(|v| v.to_string()).join(", ");
+                write!(f, "[{}]", values)
+            }
+            RESP3Value::Null => write!(f, "Null"),
+        }
+    }
 }
 
 pub fn encode_resp3(value: &RESP3Value) -> String {

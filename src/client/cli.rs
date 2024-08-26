@@ -57,8 +57,14 @@ pub enum Commands {
 #[derive(Subcommand, Debug)]
 pub enum TTLOpt {
     /// Time to live in seconds
-    Ex { seconds: u64 },
+    Ex {
+        /// The number of seconds to live
+        seconds: u64,
+    },
 
     /// Time to live in milliseconds
-    Px { milliseconds: u64 },
+    Px {
+        /// The number of milliseconds to live
+        milliseconds: u64,
+    },
 }

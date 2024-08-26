@@ -1,6 +1,6 @@
 use anyhow::{bail, Result};
 use bytes::{Buf, BytesMut};
-use std::io;
+use std::{fmt::Display, io};
 use tokio_util::codec::{Decoder, Encoder};
 
 use super::resp3::{decode_resp3, encode_resp3, RESP3Value};
@@ -10,7 +10,7 @@ pub enum Request {
     // Hello,
     Ping,
     Echo(RESP3Value),
-    Set(RESP3Value, RESP3Value, TTL),
+    Set(RESP3Value, RESP3Value, Option<TTL>),
     Get(RESP3Value),
     Del(RESP3Value),
 }
@@ -19,7 +19,23 @@ pub enum Request {
 pub enum TTL {
     Milliseconds(u64),
     Seconds(u64),
-    Persist,
+}
+
+impl Display for Request {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            // Request::Hello => write!(f, "HELLO"),
+            Request::Ping => write!(f, "PING"),
+            Request::Echo(value) => write!(f, "ECHO {}", value),
+            Request::Set(key, value, ttl) => match ttl {
+                Some(TTL::Milliseconds(ms)) => write!(f, "SET {} {} PX {}", key, value, ms),
+                Some(TTL::Seconds(s)) => write!(f, "SET {} {} EX {}", key, value, s),
+                None => write!(f, "SET {} {}", key, value),
+            },
+            Request::Get(key) => write!(f, "GET {}", key),
+            Request::Del(key) => write!(f, "DEL {}", key),
+        }
+    }
 }
 
 pub struct ClientProtoCodec;
@@ -109,21 +125,21 @@ pub fn encode_request(request: &Request) -> Vec<u8> {
         }
         Request::Set(key, value, ttl) => {
             let resp3 = match ttl {
-                TTL::Milliseconds(ms) => RESP3Value::Array(vec![
+                Some(TTL::Milliseconds(ms)) => RESP3Value::Array(vec![
                     RESP3Value::BulkString(b"SET".to_vec()),
                     key.clone(),
                     value.clone(),
                     RESP3Value::BulkString(b"PX".to_vec()),
                     RESP3Value::BulkString(ms.to_string().into_bytes()),
                 ]),
-                TTL::Seconds(s) => RESP3Value::Array(vec![
+                Some(TTL::Seconds(s)) => RESP3Value::Array(vec![
                     RESP3Value::BulkString(b"SET".to_vec()),
                     key.clone(),
                     value.clone(),
                     RESP3Value::BulkString(b"EX".to_vec()),
                     RESP3Value::BulkString(s.to_string().into_bytes()),
                 ]),
-                TTL::Persist => RESP3Value::Array(vec![
+                None => RESP3Value::Array(vec![
                     RESP3Value::BulkString(b"SET".to_vec()),
                     key.clone(),
                     value.clone(),
@@ -204,7 +220,7 @@ fn decode_set_request(data: &[RESP3Value]) -> Result<Request> {
     let value = data[2].clone();
 
     let ttl = if data.len() == 3 {
-        TTL::Persist
+        None
     } else if data.len() == 5 {
         decode_ttl(&data[3], &data[4])?
     } else {
@@ -214,7 +230,7 @@ fn decode_set_request(data: &[RESP3Value]) -> Result<Request> {
     Ok(Request::Set(key, value, ttl))
 }
 
-fn decode_ttl(ttl_type: &RESP3Value, ttl_value: &RESP3Value) -> Result<TTL> {
+fn decode_ttl(ttl_type: &RESP3Value, ttl_value: &RESP3Value) -> Result<Option<TTL>> {
     let ttl_type_str = match ttl_type {
         RESP3Value::BulkString(s) => s,
         _ => bail!("Invalid TTL type"),
@@ -226,8 +242,8 @@ fn decode_ttl(ttl_type: &RESP3Value, ttl_value: &RESP3Value) -> Result<TTL> {
     };
 
     match ttl_type_str.as_slice() {
-        b"PX" => Ok(TTL::Milliseconds(ttl_value)),
-        b"EX" => Ok(TTL::Seconds(ttl_value)),
+        b"PX" => Ok(Some(TTL::Milliseconds(ttl_value))),
+        b"EX" => Ok(Some(TTL::Seconds(ttl_value))),
         _ => bail!("Invalid TTL type"),
     }
 }

@@ -1,17 +1,19 @@
 use crate::common::{protocol::TTL, resp3::RESP3Value};
 use anyhow::Result;
-use std::time::Instant;
-use std::{collections::HashMap, time::Duration};
+use std::collections::HashMap;
 use tokio::sync::{mpsc, oneshot};
+use tokio::time::{interval_at, Duration, Instant, Interval};
 
 pub struct KVStore {
     receiver: mpsc::Receiver<KVStoreMessage>,
+    active_expiration_interval: Interval,
     kv_store: HashMap<Key, Value>,
 }
 
 type Key = RESP3Value;
 type Value = (RESP3Value, Option<Instant>);
 
+#[derive(Debug)]
 pub enum KVStoreMessage {
     Set {
         key: Key,
@@ -29,9 +31,13 @@ pub enum KVStoreMessage {
 }
 
 impl KVStore {
-    pub fn new(receiver: mpsc::Receiver<KVStoreMessage>) -> Self {
+    pub fn new(
+        receiver: mpsc::Receiver<KVStoreMessage>,
+        active_expiration_interval: Interval,
+    ) -> Self {
         KVStore {
             receiver,
+            active_expiration_interval,
             kv_store: HashMap::new(),
         }
     }
@@ -46,7 +52,7 @@ impl KVStore {
                 let _old_value = self.kv_store.insert(key, value);
                 // let _ = respond_to
                 //     .send(())
-                //     .inspect_err(|err| eprintln!("Failed to send response: {:?}", err));
+                //     .inspect_err(|err| log::error!("Failed to send response: {:?}", err));
             }
             KVStoreMessage::Get { key, respond_to } => {
                 let value = self.kv_store.get(&key).cloned();
@@ -60,7 +66,7 @@ impl KVStore {
                 let value = value.map(|(value, _)| value);
                 let _ = respond_to
                     .send(value)
-                    .inspect_err(|err| eprintln!("Failed to send response: {:?}", err));
+                    .inspect_err(|err| log::error!("Failed to send response: {:?}", err));
             }
             KVStoreMessage::Del {
                 key,
@@ -70,15 +76,26 @@ impl KVStore {
                 // let old_value = old_value.map(|(value, _)| value);
                 // let _ = respond_to
                 //     .send(old_value)
-                //     .inspect_err(|err| eprintln!("Failed to send response: {:?}", err));
+                //     .inspect_err(|err| log::error!("Failed to send response: {:?}", err));
             }
         }
+    }
+
+    fn remove_expired(&mut self, now: Instant) {
+        self.kv_store
+            .retain(|_, (_, expiry)| expiry.map_or(true, |expiry| expiry > now));
     }
 }
 
 async fn run_kv_store(mut kv_store: KVStore) {
-    while let Some(msg) = kv_store.receiver.recv().await {
-        kv_store.handle_message(msg);
+    loop {
+        tokio::select! {
+            msg = kv_store.receiver.recv() => match msg {
+                Some(msg) => kv_store.handle_message(msg),
+                None => break,
+            },
+            now = kv_store.active_expiration_interval.tick() => kv_store.remove_expired(now),
+        }
     }
 }
 
@@ -89,50 +106,52 @@ pub struct KVStoreHandle {
 
 impl KVStoreHandle {
     pub fn new() -> Self {
-        let (sender, receiver) = mpsc::channel(8);
-        let kv_store = KVStore::new(receiver);
+        let (sender, receiver) = mpsc::channel(32);
+        let active_expiration_interval_period = Duration::from_secs(1);
+        let active_expiration_interval = interval_at(
+            Instant::now() + active_expiration_interval_period,
+            active_expiration_interval_period,
+        );
+
+        let kv_store = KVStore::new(receiver, active_expiration_interval);
         tokio::spawn(run_kv_store(kv_store));
         Self { sender }
     }
 
-    pub async fn set(&self, key: RESP3Value, value: RESP3Value, ttl: TTL) -> Result<()> {
-        // let (send, recv) = oneshot::channel();
+    pub async fn set(&self, key: RESP3Value, value: RESP3Value, ttl: Option<TTL>) -> Result<()> {
+        // let (respond_to, response) = oneshot::channel();
         let value = (
             value,
-            match ttl {
-                TTL::Milliseconds(ms) => Some(Instant::now() + Duration::from_millis(ms)),
-                TTL::Seconds(s) => Some(Instant::now() + Duration::from_secs(s)),
-                TTL::Persist => None,
-            },
+            ttl.map(|ttl| match ttl {
+                TTL::Seconds(ttl) => Instant::now() + Duration::from_secs(ttl),
+                TTL::Milliseconds(ttl) => Instant::now() + Duration::from_millis(ttl),
+            }),
         );
         let msg = KVStoreMessage::Set {
             key,
             value,
-            // respond_to: send,
+            // respond_to,
         };
         self.sender.send(msg).await?;
-        // recv.await?;
+        // response.await?;
         Ok(())
     }
 
     pub async fn get(&self, key: Key) -> Result<Option<RESP3Value>> {
-        let (send, recv) = oneshot::channel();
-        let msg = KVStoreMessage::Get {
-            key,
-            respond_to: send,
-        };
+        let (respond_to, response) = oneshot::channel();
+        let msg = KVStoreMessage::Get { key, respond_to };
         self.sender.send(msg).await?;
-        Ok(recv.await?)
+        Ok(response.await?)
     }
 
     pub async fn del(&self, key: Key) -> Result<()> {
-        // let (send, recv) = oneshot::channel();
+        // let (respond_to, response) = oneshot::channel();
         let msg = KVStoreMessage::Del {
             key,
-            // respond_to: send,
+            // respond_to,
         };
         self.sender.send(msg).await?;
-        // recv.await?;
+        // response.await?;
         Ok(())
     }
 }

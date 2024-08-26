@@ -1,3 +1,5 @@
+use std::net::SocketAddr;
+
 use super::kv_store::KVStoreHandle;
 use crate::common::{
     protocol::{Request, ServerProtoCodec},
@@ -12,17 +14,22 @@ use tokio_util::codec::Framed;
 
 pub async fn handle(
     kv_store: KVStoreHandle,
+    addr: SocketAddr,
     mut sink: SplitSink<Framed<TcpStream, ServerProtoCodec>, RESP3Value>,
     mut stream: SplitStream<Framed<TcpStream, ServerProtoCodec>>,
 ) {
-    while let Some(res) = stream.next().await {
-        let request = match res {
+    log::info!("Accepted connection from {}", addr);
+
+    while let Some(result) = stream.next().await {
+        let request = match result {
             Ok(request) => request,
             Err(err) => {
-                eprintln!("Failed to read from socket: {:?}", err);
+                log::error!("Failed to read from socket: {:?}", err);
                 break;
             }
         };
+
+        log::info!("Received request: {}", request);
 
         let response = match request {
             Request::Ping => RESP3Value::SimpleString("PONG".to_string()),
@@ -33,7 +40,7 @@ pub async fn handle(
                 match res {
                     Ok(_) => RESP3Value::SimpleString("OK".to_string()),
                     Err(err) => {
-                        eprintln!("Failed to set key: {:?}", err);
+                        log::error!("Failed to set key: {:?}", err);
                         continue;
                     }
                 }
@@ -44,7 +51,7 @@ pub async fn handle(
                 match res {
                     Ok(value) => value.unwrap_or(RESP3Value::Null),
                     Err(err) => {
-                        eprintln!("Failed to get key: {:?}", err);
+                        log::error!("Failed to get key: {:?}", err);
                         continue;
                     }
                 }
@@ -55,18 +62,20 @@ pub async fn handle(
                 match res {
                     Ok(_) => RESP3Value::SimpleString("OK".to_string()),
                     Err(err) => {
-                        eprintln!("Failed to del key: {:?}", err);
+                        log::error!("Failed to del key: {:?}", err);
                         continue;
                     }
                 }
             }
         };
 
+        log::info!("Sending response: {}", response);
+
         let _ = sink
             .send(response)
             .await
-            .inspect_err(|err| eprintln!("Failed to send response: {:?}", err));
+            .inspect_err(|err| log::error!("Failed to send response: {:?}", err));
     }
 
-    eprintln!("Connection closed");
+    log::info!("Connection closed for {}", addr);
 }
