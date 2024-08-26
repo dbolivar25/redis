@@ -71,9 +71,7 @@ impl Decoder for ClientProtoCodec {
                 src.advance(len);
                 Ok(Some(resp3))
             }
-            Err(e) => {
-                return Err(io::Error::new(io::ErrorKind::InvalidData, e));
-            }
+            Err(e) => Err(io::Error::new(io::ErrorKind::InvalidData, e)),
         }
     }
 }
@@ -111,9 +109,7 @@ impl Decoder for ServerProtoCodec {
                 src.advance(len);
                 Ok(Some(request))
             }
-            Err(e) => {
-                return Err(io::Error::new(io::ErrorKind::InvalidData, e));
-            }
+            Err(e) => Err(io::Error::new(io::ErrorKind::InvalidData, e)),
         }
     }
 }

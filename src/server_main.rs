@@ -1,5 +1,4 @@
 use clap::Parser;
-use log;
 use redis::server::{
     cli::Args, connection::ConnectionHandle, connection_manager::ConnectionManagerHandle,
     kv_store::KVStoreHandle,
