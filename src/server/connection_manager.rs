@@ -48,7 +48,7 @@ impl ConnectionManager {
         }
     }
 
-    pub fn handle_message(&mut self, msg: ConnectionManagerMessage) {
+    pub async fn handle_message(&mut self, msg: ConnectionManagerMessage) {
         match msg {
             ConnectionManagerMessage::AddMaster { connection } => {
                 self.master = Some(connection);
@@ -74,21 +74,23 @@ impl ConnectionManager {
                 }
             }
             ConnectionManagerMessage::Broadcast { request } => {
-                self.replicas.iter().for_each(|(replica, _)| {
-                    let _ = replica.forward_request(request.clone());
-                });
+                future::join_all(
+                    self.replicas
+                        .iter()
+                        .map(|(replica, _)| replica.forward_request(request.clone())),
+                )
+                .await;
             }
             ConnectionManagerMessage::Shutdown => {
-                self.clients.iter().for_each(|(client, _)| {
-                    let _ = client.shutdown();
-                });
+                let _ = future::join_all(self.clients.iter().map(|(client, _)| client.shutdown()))
+                    .await;
 
-                self.replicas.iter().for_each(|(replica, _)| {
-                    let _ = replica.shutdown();
-                });
+                let _ =
+                    future::join_all(self.replicas.iter().map(|(replica, _)| replica.shutdown()))
+                        .await;
 
                 if let Some(master) = &self.master {
-                    let _ = master.shutdown();
+                    let _ = master.shutdown().await;
                 }
 
                 self.receiver.close();
@@ -106,7 +108,7 @@ async fn run_connection_manager(
     loop {
         tokio::select! {
             Some(msg) = connection_manager.receiver.recv() => {
-                connection_manager.handle_message(msg);
+                connection_manager.handle_message(msg).await;
             }
             else => {
                 break;
@@ -147,7 +149,7 @@ impl ConnectionManagerHandle {
 
     pub async fn add_master(&self, connection: ConnectionHandle) -> Result<()> {
         let msg = ConnectionManagerMessage::AddMaster { connection };
-        let _ = self.sender.send(msg).await?;
+        self.sender.send(msg).await?;
         Ok(())
     }
 
@@ -160,31 +162,31 @@ impl ConnectionManagerHandle {
             connection,
             connection_shutdown_complete,
         };
-        let _ = self.sender.send(msg).await?;
+        self.sender.send(msg).await?;
         Ok(())
     }
 
     pub async fn set_replica(&self, addr: SocketAddr) -> Result<()> {
         let msg = ConnectionManagerMessage::SetReplica { addr };
-        let _ = self.sender.send(msg).await?;
+        self.sender.send(msg).await?;
         Ok(())
     }
 
     pub async fn remove_connection(&self, addr: SocketAddr) -> Result<()> {
         let msg = ConnectionManagerMessage::RemoveConnection { addr };
-        let _ = self.sender.send(msg).await?;
+        self.sender.send(msg).await?;
         Ok(())
     }
 
     pub async fn broadcast(&self, request: Request) -> Result<()> {
         let msg = ConnectionManagerMessage::Broadcast { request };
-        let _ = self.sender.send(msg).await?;
+        self.sender.send(msg).await?;
         Ok(())
     }
 
     pub async fn shutdown(&self) -> Result<()> {
         let msg = ConnectionManagerMessage::Shutdown;
-        let _ = self.sender.send(msg).await?;
+        self.sender.send(msg).await?;
         Ok(())
     }
 }

@@ -44,7 +44,7 @@ pub fn encode_resp3(value: &RESP3Value) -> String {
             data.len(),
             data.iter().map(encode_resp3).collect::<String>()
         ),
-        RESP3Value::Null => format!("_\r\n"),
+        RESP3Value::Null => "_\r\n".to_string(),
     }
 }
 
