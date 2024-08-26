@@ -64,6 +64,12 @@ async fn run_connection(mut connection: Connection, on_shutdown_complete: onesho
 
     loop {
         tokio::select! {
+            msg = connection.receiver.recv() => match msg {
+                Some(msg) => connection.handle_message(msg).await,
+                None => {
+                    break;
+                }
+            },
             result = connection.stream.next() => {
                 let request = match result {
                     Some(Ok(request)) => request,
@@ -134,12 +140,6 @@ async fn run_connection(mut connection: Connection, on_shutdown_complete: onesho
                     .await
                     .inspect_err(|err| log::error!("Failed to send response: {:?}", err));
             }
-            msg = connection.receiver.recv() => match msg {
-                Some(msg) => connection.handle_message(msg).await,
-                None => {
-                    break;
-                }
-            },
             else => {
                 break;
             }

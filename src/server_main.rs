@@ -45,7 +45,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
 
     tokio::spawn(async move {
-        let _ = tokio::signal::ctrl_c().await;
+        tokio::select!(
+            _ = tokio::signal::ctrl_c() => {},
+            _ = tokio::time::sleep(std::time::Duration::from_secs(15)) => {}
+        );
         std::process::exit(1);
     });
 
