@@ -5,7 +5,7 @@ use tokio_util::codec::{Decoder, Encoder};
 
 use super::resp3::{decode_resp3, encode_resp3, RESP3Value};
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Request {
     // Hello,
     Ping,
