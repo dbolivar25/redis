@@ -1,6 +1,6 @@
 use super::{connection_manager::ConnectionManagerHandle, kv_store::KVStoreHandle};
 use crate::common::{
-    protocol::{Request, ServerProtoCodec},
+    protocol::{decode_request, RESP3Codec, Request},
     resp3::RESP3Value,
 };
 use anyhow::Result;
@@ -14,7 +14,7 @@ use tokio_util::codec::Framed;
 
 pub struct Connection {
     receiver: mpsc::Receiver<ConnectionMessage>,
-    stream: Framed<TcpStream, ServerProtoCodec>,
+    stream: Framed<TcpStream, RESP3Codec>,
     addr: SocketAddr,
     kv_store: KVStoreHandle,
     conn_manager: ConnectionManagerHandle,
@@ -34,7 +34,7 @@ impl Connection {
         kv_store: KVStoreHandle,
         conn_manager: ConnectionManagerHandle,
     ) -> Self {
-        let stream = Framed::new(stream, ServerProtoCodec);
+        let stream = Framed::new(stream, RESP3Codec);
 
         Connection {
             receiver,
@@ -72,7 +72,13 @@ async fn run_connection(mut connection: Connection, on_shutdown_complete: onesho
             },
             result = connection.stream.next() => {
                 let request = match result {
-                    Some(Ok(request)) => request,
+                    Some(Ok(request)) => match decode_request(request) {
+                        Ok(request) => request,
+                        Err(err) => {
+                            log::error!("Failed to decode request: {:?}", err);
+                            continue;
+                        }
+                    }
                     Some(Err(err)) => {
                         log::error!("Failed to read from socket: {:?}", err);
                         break;

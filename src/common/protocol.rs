@@ -38,25 +38,19 @@ impl Display for Request {
     }
 }
 
-pub struct ClientProtoCodec;
+pub struct RESP3Codec;
 
-impl Default for ClientProtoCodec {
-    fn default() -> Self {
-        ClientProtoCodec
-    }
-}
-
-impl Encoder<Request> for ClientProtoCodec {
+impl Encoder<RESP3Value> for RESP3Codec {
     type Error = io::Error;
 
-    fn encode(&mut self, item: Request, dst: &mut BytesMut) -> Result<(), Self::Error> {
-        let encoded = encode_request(&item);
-        dst.extend_from_slice(&encoded);
+    fn encode(&mut self, item: RESP3Value, dst: &mut BytesMut) -> Result<(), Self::Error> {
+        let encoded = encode_resp3(&item);
+        dst.extend_from_slice(encoded.as_bytes());
         Ok(())
     }
 }
 
-impl Decoder for ClientProtoCodec {
+impl Decoder for RESP3Codec {
     type Item = RESP3Value;
     type Error = io::Error;
 
@@ -76,132 +70,64 @@ impl Decoder for ClientProtoCodec {
     }
 }
 
-pub struct ServerProtoCodec;
-
-impl Default for ServerProtoCodec {
-    fn default() -> Self {
-        ServerProtoCodec
-    }
-}
-
-impl Encoder<RESP3Value> for ServerProtoCodec {
-    type Error = io::Error;
-
-    fn encode(&mut self, item: RESP3Value, dst: &mut BytesMut) -> Result<(), Self::Error> {
-        let encoded = encode_resp3(&item);
-        dst.extend_from_slice(encoded.as_bytes());
-        Ok(())
-    }
-}
-
-impl Decoder for ServerProtoCodec {
-    type Item = Request;
-    type Error = io::Error;
-
-    fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
-        if src.is_empty() {
-            return Ok(None);
-        }
-
-        match decode_request(src) {
-            Ok((request, rest)) => {
-                let len = src.len() - rest.len();
-                src.advance(len);
-                Ok(Some(request))
-            }
-            Err(e) => Err(io::Error::new(io::ErrorKind::InvalidData, e)),
-        }
-    }
-}
-
-pub fn encode_request(request: &Request) -> Vec<u8> {
+pub fn encode_request(request: &Request) -> RESP3Value {
     match request {
-        Request::Ping => {
-            let resp3 = RESP3Value::Array(vec![RESP3Value::BulkString(b"PING".to_vec())]);
-
-            let encoded = encode_resp3(&resp3);
-            encoded.into_bytes()
-        }
-        Request::Echo(message) => {
-            let resp3 = RESP3Value::Array(vec![
-                RESP3Value::BulkString(b"ECHO".to_vec()),
-                message.clone(),
-            ]);
-
-            let encoded = encode_resp3(&resp3);
-            encoded.into_bytes()
-        }
-        Request::Set(key, value, ttl) => {
-            let resp3 = match ttl {
-                Some(TTL::Milliseconds(ms)) => RESP3Value::Array(vec![
-                    RESP3Value::BulkString(b"SET".to_vec()),
-                    key.clone(),
-                    value.clone(),
-                    RESP3Value::BulkString(b"PX".to_vec()),
-                    RESP3Value::BulkString(ms.to_string().into_bytes()),
-                ]),
-                Some(TTL::Seconds(s)) => RESP3Value::Array(vec![
-                    RESP3Value::BulkString(b"SET".to_vec()),
-                    key.clone(),
-                    value.clone(),
-                    RESP3Value::BulkString(b"EX".to_vec()),
-                    RESP3Value::BulkString(s.to_string().into_bytes()),
-                ]),
-                None => RESP3Value::Array(vec![
-                    RESP3Value::BulkString(b"SET".to_vec()),
-                    key.clone(),
-                    value.clone(),
-                ]),
-            };
-
-            let encoded = encode_resp3(&resp3);
-            encoded.into_bytes()
-        }
+        Request::Ping => RESP3Value::Array(vec![RESP3Value::BulkString(b"PING".to_vec())]),
+        Request::Echo(message) => RESP3Value::Array(vec![
+            RESP3Value::BulkString(b"ECHO".to_vec()),
+            message.clone(),
+        ]),
+        Request::Set(key, value, ttl) => match ttl {
+            Some(TTL::Milliseconds(ms)) => RESP3Value::Array(vec![
+                RESP3Value::BulkString(b"SET".to_vec()),
+                key.clone(),
+                value.clone(),
+                RESP3Value::BulkString(b"PX".to_vec()),
+                RESP3Value::BulkString(ms.to_string().into_bytes()),
+            ]),
+            Some(TTL::Seconds(s)) => RESP3Value::Array(vec![
+                RESP3Value::BulkString(b"SET".to_vec()),
+                key.clone(),
+                value.clone(),
+                RESP3Value::BulkString(b"EX".to_vec()),
+                RESP3Value::BulkString(s.to_string().into_bytes()),
+            ]),
+            None => RESP3Value::Array(vec![
+                RESP3Value::BulkString(b"SET".to_vec()),
+                key.clone(),
+                value.clone(),
+            ]),
+        },
         Request::Get(key) => {
-            let resp3 =
-                RESP3Value::Array(vec![RESP3Value::BulkString(b"GET".to_vec()), key.clone()]);
-
-            let encoded = encode_resp3(&resp3);
-            encoded.into_bytes()
+            RESP3Value::Array(vec![RESP3Value::BulkString(b"GET".to_vec()), key.clone()])
         }
         Request::Del(key) => {
-            let resp3 =
-                RESP3Value::Array(vec![RESP3Value::BulkString(b"DEL".to_vec()), key.clone()]);
-
-            let encoded = encode_resp3(&resp3);
-            encoded.into_bytes()
+            RESP3Value::Array(vec![RESP3Value::BulkString(b"DEL".to_vec()), key.clone()])
         }
     }
 }
 
-pub fn decode_request(input: &[u8]) -> Result<(Request, &[u8])> {
-    let (resp3, rest) = decode_resp3(input)?;
+pub fn decode_request(data: RESP3Value) -> Result<Request> {
+    if let RESP3Value::Array(data) = data {
+        if data.is_empty() {
+            bail!("Invalid request");
+        }
 
-    let request = match resp3 {
-        RESP3Value::Array(data) => decode_request_array(data)?,
-        _ => bail!("Invalid request"),
-    };
+        let command = match &data[0] {
+            RESP3Value::BulkString(s) => s.as_slice(),
+            _ => bail!("Invalid command"),
+        };
 
-    Ok((request, rest))
-}
-
-fn decode_request_array(data: Vec<RESP3Value>) -> Result<Request> {
-    if data.is_empty() {
+        match command {
+            b"PING" => decode_ping_request(&data),
+            b"ECHO" => decode_echo_request(&data),
+            b"SET" => decode_set_request(&data),
+            b"GET" => decode_get_request(&data),
+            b"DEL" => decode_del_request(&data),
+            _ => bail!("Invalid command"),
+        }
+    } else {
         bail!("Invalid request");
-    }
-
-    let command = match &data[0] {
-        RESP3Value::BulkString(s) => s.as_slice(),
-        _ => bail!("Invalid command"),
-    };
-
-    match command {
-        b"PING" => decode_ping_request(&data),
-        b"ECHO" => decode_echo_request(&data),
-        b"SET" => decode_set_request(&data),
-        b"GET" => decode_get_request(&data),
-        b"DEL" => decode_del_request(&data),
-        _ => bail!("Invalid command"),
     }
 }
 
