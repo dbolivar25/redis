@@ -1,6 +1,6 @@
 use super::{connection_manager::ConnectionManagerHandle, kv_store::KVStoreHandle};
 use crate::common::{
-    protocol::{decode_request, RESP3Codec, Request},
+    codec::{decode_request, RESP3Codec, Request},
     resp3::RESP3Value,
 };
 use anyhow::Result;

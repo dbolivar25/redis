@@ -1,5 +1,5 @@
 use super::connection::ConnectionHandle;
-use crate::common::protocol::Request;
+use crate::common::codec::Request;
 use anyhow::Result;
 use futures::future;
 use std::net::SocketAddr;

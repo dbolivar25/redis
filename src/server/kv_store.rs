@@ -1,4 +1,4 @@
-use crate::common::{protocol::TTL, resp3::RESP3Value};
+use crate::common::{codec::TTL, resp3::RESP3Value};
 use anyhow::Result;
 use std::collections::HashMap;
 use tokio::sync::{mpsc, oneshot};
