@@ -32,11 +32,12 @@ impl KVStore {
     pub fn new(
         receiver: mpsc::Receiver<KVStoreMessage>,
         active_expiration_interval: Interval,
+        kv_store: HashMap<Key, Value>,
     ) -> Self {
         KVStore {
             receiver,
             active_expiration_interval,
-            kv_store: HashMap::new(),
+            kv_store,
         }
     }
 
@@ -96,8 +97,9 @@ impl KVStoreHandle {
             Instant::now() + active_expiration_interval_period,
             active_expiration_interval_period,
         );
+        let kv_store = HashMap::new();
 
-        let kv_store = KVStore::new(receiver, active_expiration_interval);
+        let kv_store = KVStore::new(receiver, active_expiration_interval, kv_store);
         tokio::spawn(run_kv_store(kv_store));
         Self { sender }
     }
