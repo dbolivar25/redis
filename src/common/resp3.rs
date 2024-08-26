@@ -82,7 +82,10 @@ fn decode_integer(input: &[u8]) -> Result<(RESP3Value, &[u8])> {
 fn decode_bulk_string(input: &[u8]) -> Result<(RESP3Value, &[u8])> {
     let (len_str, rest) = read_until_crlf(input)?;
     if len_str == "-1" {
-        return Ok((RESP3Value::Null, &rest[2..]));
+        let rest = rest
+            .get(2..)
+            .ok_or_else(|| anyhow!("Invalid bulk string"))?;
+        return Ok((RESP3Value::Null, rest));
     }
     let len = len_str.parse::<usize>().map_err(|e| anyhow!(e))?;
     if rest.len() < len + 2 {
@@ -96,7 +99,10 @@ fn decode_bulk_string(input: &[u8]) -> Result<(RESP3Value, &[u8])> {
 fn decode_array(input: &[u8]) -> Result<(RESP3Value, &[u8])> {
     let (len_str, mut rest) = read_until_crlf(input)?;
     if len_str == "-1" {
-        return Ok((RESP3Value::Null, &rest[2..]));
+        let rest = rest
+            .get(2..)
+            .ok_or_else(|| anyhow!("Invalid bulk string"))?;
+        return Ok((RESP3Value::Null, rest));
     }
     let len = len_str.parse::<usize>().map_err(|e| anyhow!(e))?;
     let mut values = Vec::with_capacity(len);
@@ -117,11 +123,13 @@ fn decode_null(input: &[u8]) -> Result<(RESP3Value, &[u8])> {
 }
 
 fn read_until_crlf(input: &[u8]) -> Result<(String, &[u8])> {
-    if let Some(pos) = input.windows(2).position(|w| w == b"\r\n") {
-        let s = str::from_utf8(&input[..pos])
-            .map_err(|e| anyhow!(e))?
-            .to_string();
-        Ok((s, &input[pos + 2..]))
+    if let Some((pos, _)) = input.iter().find_position(|&&b| b == b'\r') {
+        if let Some(&b'\n') = input.get(pos + 1) {
+            let s = str::from_utf8(&input[..pos]).map_err(|e| anyhow!(e))?;
+            Ok((s.to_string(), &input[pos + 2..]))
+        } else {
+            bail!("LF not found")
+        }
     } else {
         bail!("CRLF not found")
     }
