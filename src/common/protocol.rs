@@ -40,6 +40,12 @@ impl Display for Request {
 
 pub struct ClientProtoCodec;
 
+impl Default for ClientProtoCodec {
+    fn default() -> Self {
+        ClientProtoCodec
+    }
+}
+
 impl Encoder<Request> for ClientProtoCodec {
     type Error = io::Error;
 
@@ -73,6 +79,12 @@ impl Decoder for ClientProtoCodec {
 }
 
 pub struct ServerProtoCodec;
+
+impl Default for ServerProtoCodec {
+    fn default() -> Self {
+        ServerProtoCodec
+    }
+}
 
 impl Encoder<RESP3Value> for ServerProtoCodec {
     type Error = io::Error;

@@ -48,7 +48,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     if let Some(Ok(response)) = response {
         let time = start.elapsed();
-        println!("{} ({:?})", response, time);
+        println!("{} in {:?}", response, time);
     } else {
         eprintln!("Failed to receive response");
     }

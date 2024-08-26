@@ -26,6 +26,7 @@ pub enum KVStoreMessage {
     Del {
         key: Key,
     },
+    Shutdown,
 }
 
 impl KVStore {
@@ -63,6 +64,9 @@ impl KVStore {
             KVStoreMessage::Del { key } => {
                 let _ = self.kv_store.remove(&key);
             }
+            KVStoreMessage::Shutdown => {
+                self.receiver.close();
+            }
         }
     }
 
@@ -72,7 +76,9 @@ impl KVStore {
     }
 }
 
-async fn run_kv_store(mut kv_store: KVStore) {
+async fn run_kv_store(mut kv_store: KVStore, on_shutdown_complete: oneshot::Sender<()>) {
+    log::info!("KV store started");
+
     loop {
         tokio::select! {
             msg = kv_store.receiver.recv() => match msg {
@@ -80,8 +86,15 @@ async fn run_kv_store(mut kv_store: KVStore) {
                 None => break,
             },
             now = kv_store.active_expiration_interval.tick() => kv_store.remove_expired(now),
+            else => {
+                break;
+            }
         }
     }
+
+    log::info!("KV store shut down");
+
+    on_shutdown_complete.send(()).ok();
 }
 
 #[derive(Clone)]
@@ -90,8 +103,9 @@ pub struct KVStoreHandle {
 }
 
 impl KVStoreHandle {
-    pub fn new() -> Self {
+    pub fn new() -> (Self, oneshot::Receiver<()>) {
         let (sender, receiver) = mpsc::channel(32);
+        let (on_shutdown_complete, shutdown_complete) = oneshot::channel();
         let active_expiration_interval_period = Duration::from_secs(1);
         let active_expiration_interval = interval_at(
             Instant::now() + active_expiration_interval_period,
@@ -100,8 +114,8 @@ impl KVStoreHandle {
         let kv_store = HashMap::new();
 
         let kv_store = KVStore::new(receiver, active_expiration_interval, kv_store);
-        tokio::spawn(run_kv_store(kv_store));
-        Self { sender }
+        tokio::spawn(run_kv_store(kv_store, on_shutdown_complete));
+        (KVStoreHandle { sender }, shutdown_complete)
     }
 
     pub async fn set(&self, key: RESP3Value, value: RESP3Value, ttl: Option<TTL>) -> Result<()> {
@@ -126,6 +140,12 @@ impl KVStoreHandle {
 
     pub async fn del(&self, key: Key) -> Result<()> {
         let msg = KVStoreMessage::Del { key };
+        self.sender.send(msg).await?;
+        Ok(())
+    }
+
+    pub async fn shutdown(&self) -> Result<()> {
+        let msg = KVStoreMessage::Shutdown;
         self.sender.send(msg).await?;
         Ok(())
     }
