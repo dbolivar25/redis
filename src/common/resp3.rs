@@ -82,7 +82,7 @@ fn decode_integer(input: &[u8]) -> Result<(RESP3Value, &[u8])> {
 fn decode_bulk_string(input: &[u8]) -> Result<(RESP3Value, &[u8])> {
     let (len_str, rest) = read_until_crlf(input)?;
     if len_str == "-1" {
-        return Ok((RESP3Value::Null, rest));
+        return Ok((RESP3Value::Null, &rest[2..]));
     }
     let len = len_str.parse::<usize>().map_err(|e| anyhow!(e))?;
     if rest.len() < len + 2 {
@@ -96,7 +96,7 @@ fn decode_bulk_string(input: &[u8]) -> Result<(RESP3Value, &[u8])> {
 fn decode_array(input: &[u8]) -> Result<(RESP3Value, &[u8])> {
     let (len_str, mut rest) = read_until_crlf(input)?;
     if len_str == "-1" {
-        return Ok((RESP3Value::Null, rest));
+        return Ok((RESP3Value::Null, &rest[2..]));
     }
     let len = len_str.parse::<usize>().map_err(|e| anyhow!(e))?;
     let mut values = Vec::with_capacity(len);
