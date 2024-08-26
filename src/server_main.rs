@@ -1,5 +1,4 @@
 use clap::Parser;
-use futures::StreamExt;
 use log;
 use redis::{
     common::protocol::ServerProtoCodec,
@@ -19,9 +18,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     log4rs::init_file("config/log4rs.yml", Default::default())?;
 
-    let bind_addr = format!("{}:{}", host, port);
-
-    let listener = TcpListener::bind(bind_addr).await?;
+    let listener = TcpListener::bind(format!("{}:{}", host, port)).await?;
     let kv_store = KVStoreHandle::new();
 
     log::info!("Listening on {}", listener.local_addr()?);
@@ -29,11 +26,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
     loop {
         tokio::select! {
             Ok((stream, addr)) = listener.accept() => {
-                let (sink, stream) = Framed::new(stream, ServerProtoCodec).split();
+                let stream = Framed::new(stream, ServerProtoCodec);
                 let kv_store = kv_store.clone();
 
                 tokio::spawn(async move {
-                    connection::handle(kv_store, addr, sink, stream).await;
+                    connection::handle(stream, addr, kv_store).await;
                 });
             }
             _ = tokio::signal::ctrl_c() => {
