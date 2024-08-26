@@ -18,7 +18,6 @@ pub enum KVStoreMessage {
     Set {
         key: Key,
         value: Value,
-        // respond_to: oneshot::Sender<()>,
     },
     Get {
         key: Key,
@@ -26,7 +25,6 @@ pub enum KVStoreMessage {
     },
     Del {
         key: Key,
-        // respond_to: oneshot::Sender<Option<RESP3Value>>,
     },
 }
 
@@ -44,15 +42,8 @@ impl KVStore {
 
     fn handle_message(&mut self, msg: KVStoreMessage) {
         match msg {
-            KVStoreMessage::Set {
-                key,
-                value,
-                // respond_to,
-            } => {
-                let _old_value = self.kv_store.insert(key, value);
-                // let _ = respond_to
-                //     .send(())
-                //     .inspect_err(|err| log::error!("Failed to send response: {:?}", err));
+            KVStoreMessage::Set { key, value } => {
+                let _ = self.kv_store.insert(key, value);
             }
             KVStoreMessage::Get { key, respond_to } => {
                 let value = self.kv_store.get(&key).cloned();
@@ -68,15 +59,8 @@ impl KVStore {
                     .send(value)
                     .inspect_err(|err| log::error!("Failed to send response: {:?}", err));
             }
-            KVStoreMessage::Del {
-                key,
-                // respond_to
-            } => {
-                let _old_value = self.kv_store.remove(&key);
-                // let old_value = old_value.map(|(value, _)| value);
-                // let _ = respond_to
-                //     .send(old_value)
-                //     .inspect_err(|err| log::error!("Failed to send response: {:?}", err));
+            KVStoreMessage::Del { key } => {
+                let _ = self.kv_store.remove(&key);
             }
         }
     }
@@ -119,7 +103,6 @@ impl KVStoreHandle {
     }
 
     pub async fn set(&self, key: RESP3Value, value: RESP3Value, ttl: Option<TTL>) -> Result<()> {
-        // let (respond_to, response) = oneshot::channel();
         let value = (
             value,
             ttl.map(|ttl| match ttl {
@@ -127,13 +110,8 @@ impl KVStoreHandle {
                 TTL::Milliseconds(ttl) => Instant::now() + Duration::from_millis(ttl),
             }),
         );
-        let msg = KVStoreMessage::Set {
-            key,
-            value,
-            // respond_to,
-        };
+        let msg = KVStoreMessage::Set { key, value };
         self.sender.send(msg).await?;
-        // response.await?;
         Ok(())
     }
 
@@ -141,17 +119,12 @@ impl KVStoreHandle {
         let (respond_to, response) = oneshot::channel();
         let msg = KVStoreMessage::Get { key, respond_to };
         self.sender.send(msg).await?;
-        Ok(response.await?)
+        response.await.map_err(Into::into)
     }
 
     pub async fn del(&self, key: Key) -> Result<()> {
-        // let (respond_to, response) = oneshot::channel();
-        let msg = KVStoreMessage::Del {
-            key,
-            // respond_to,
-        };
+        let msg = KVStoreMessage::Del { key };
         self.sender.send(msg).await?;
-        // response.await?;
         Ok(())
     }
 }
