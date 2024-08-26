@@ -36,6 +36,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 });
             }
             _ = tokio::signal::ctrl_c() => {
+                print!("\x08\x08"); // Erase ^C
                 break;
             }
             else => {
@@ -57,13 +58,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let _ = conn_manager_master
         .shutdown()
         .await
-        .inspect_err(|err| log::error!("Failed to shutdown connection manager: {:?}", err));
+        .inspect_err(|err| log::error!("Failed to shut down connection manager: {:?}", err));
     let _ = conn_manager_shutdown_complete.await;
 
     let _ = kv_store_master
         .shutdown()
         .await
-        .inspect_err(|err| log::error!("Failed to shutdown KV store: {:?}", err));
+        .inspect_err(|err| log::error!("Failed to shut down KV store: {:?}", err));
     let _ = kv_store_shutdown_complete.await;
 
     Ok(())
