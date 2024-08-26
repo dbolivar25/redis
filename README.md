@@ -41,7 +41,7 @@ The project is organized into the following main components:
 Key modules include:
 
 - `server/connection.rs`: Handles individual client connections
-- `server/connection_manager.rs`: Manages multiple client connections
+- `server/connection_manager.rs`: Manages all client connections
 - `server/kv_store.rs`: Implements the key-value store logic
 - `common/protocol.rs`: Defines the communication protocol
 - `common/resp3.rs`: Implements RESP3 serialization and deserialization
