@@ -43,7 +43,7 @@ Key modules include:
 - `server/connection.rs`: Handles individual client connections
 - `server/connection_manager.rs`: Manages all client connections
 - `server/kv_store.rs`: Implements the key-value store logic
-- `common/protocol.rs`: Defines the communication protocol
+- `common/codec.rs`: Implements encoding and decoding of requests
 - `common/resp3.rs`: Implements RESP3 serialization and deserialization
 
 ## Installation
@@ -119,7 +119,7 @@ The project implements the RESP3 protocol for communication between the client a
 - Array
 - Null
 
-The `protocol.rs` and `resp3.rs` modules handle encoding and decoding of messages.
+The `codec.rs` and `resp3.rs` modules handle encoding and decoding of requests.
 
 ## Logging
 
