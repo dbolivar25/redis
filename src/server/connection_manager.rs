@@ -1,4 +1,4 @@
-use super::connection::ConnectionHandle;
+use super::connection::{ConnectionHandle, ConnectionType};
 use crate::common::codec::Request;
 use anyhow::Result;
 use futures::future;
@@ -51,6 +51,12 @@ impl ConnectionManager {
     pub async fn handle_message(&mut self, msg: ConnectionManagerMessage) {
         match msg {
             ConnectionManagerMessage::AddMaster { connection } => {
+                if !self.master.is_none() {
+                    log::warn!("Replacing existing master connection");
+                    self.master.take().unwrap().shutdown().await.ok();
+                }
+
+                let _ = connection.set_conn_type(ConnectionType::Master).await;
                 self.master = Some(connection);
             }
             ConnectionManagerMessage::AddClient {
@@ -82,14 +88,15 @@ impl ConnectionManager {
                 .await;
             }
             ConnectionManagerMessage::Shutdown => {
-                let _ = future::join_all(self.clients.iter().map(|(client, _)| client.shutdown()))
-                    .await;
+                let client_shutdowns =
+                    future::join_all(self.clients.iter().map(|(client, _)| client.shutdown()));
 
-                let _ =
-                    future::join_all(self.replicas.iter().map(|(replica, _)| replica.shutdown()))
-                        .await;
+                let replica_shutdowns =
+                    future::join_all(self.replicas.iter().map(|(replica, _)| replica.shutdown()));
 
-                if let Some(master) = &self.master {
+                let _ = tokio::join!(client_shutdowns, replica_shutdowns);
+
+                if let Some(master) = self.master.take() {
                     let _ = master.shutdown().await;
                 }
 

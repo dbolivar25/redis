@@ -13,6 +13,7 @@ pub enum Request {
     Set(RESP3Value, RESP3Value, Option<TTL>),
     Get(RESP3Value),
     Del(RESP3Value),
+    PSync(RESP3Value, RESP3Value),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -34,6 +35,7 @@ impl Display for Request {
             },
             Request::Get(key) => write!(f, "GET {}", key),
             Request::Del(key) => write!(f, "DEL {}", key),
+            Request::PSync(repl_id, offset) => write!(f, "PSYNC {} {}", repl_id, offset),
         }
     }
 }
@@ -104,6 +106,11 @@ pub fn encode_request(request: &Request) -> RESP3Value {
         Request::Del(key) => {
             RESP3Value::Array(vec![RESP3Value::BulkString(b"DEL".to_vec()), key.clone()])
         }
+        Request::PSync(repl_id, offset) => RESP3Value::Array(vec![
+            RESP3Value::BulkString(b"PSYNC".to_vec()),
+            repl_id.clone(),
+            offset.clone(),
+        ]),
     }
 }
 
@@ -124,6 +131,7 @@ pub fn decode_request(data: RESP3Value) -> Result<Request> {
             b"SET" => decode_set_request(&data),
             b"GET" => decode_get_request(&data),
             b"DEL" => decode_del_request(&data),
+            b"PSYNC" => decode_psync_request(&data),
             _ => bail!("Invalid command"),
         }
     } else {
@@ -135,6 +143,7 @@ fn decode_ping_request(data: &[RESP3Value]) -> Result<Request> {
     if data.len() != 1 {
         bail!("Invalid PING request");
     }
+
     Ok(Request::Ping)
 }
 
@@ -142,6 +151,7 @@ fn decode_echo_request(data: &[RESP3Value]) -> Result<Request> {
     if data.len() != 2 {
         bail!("Invalid ECHO request");
     }
+
     Ok(Request::Echo(data[1].clone()))
 }
 
@@ -186,6 +196,7 @@ fn decode_get_request(data: &[RESP3Value]) -> Result<Request> {
     if data.len() != 2 {
         bail!("Invalid GET request");
     }
+
     Ok(Request::Get(data[1].clone()))
 }
 
@@ -193,5 +204,24 @@ fn decode_del_request(data: &[RESP3Value]) -> Result<Request> {
     if data.len() != 2 {
         bail!("Invalid DEL request");
     }
+
     Ok(Request::Del(data[1].clone()))
+}
+
+fn decode_psync_request(data: &[RESP3Value]) -> Result<Request> {
+    if data.len() != 3 {
+        bail!("Invalid PSYNC request");
+    }
+
+    if let RESP3Value::BulkString(_) = data[1] {
+    } else {
+        bail!("Invalid PSYNC request");
+    }
+
+    if let RESP3Value::BulkString(_) = data[2] {
+    } else {
+        bail!("Invalid PSYNC request");
+    }
+
+    Ok(Request::PSync(data[1].clone(), data[2].clone()))
 }

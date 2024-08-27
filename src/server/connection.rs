@@ -1,6 +1,6 @@
 use super::{connection_manager::ConnectionManagerHandle, kv_store::KVStoreHandle};
 use crate::common::{
-    codec::{decode_request, RESP3Codec, Request},
+    codec::{decode_request, encode_request, RESP3Codec, Request},
     resp3::RESP3Value,
 };
 use anyhow::Result;
@@ -16,29 +16,38 @@ pub struct Connection {
     receiver: mpsc::Receiver<ConnectionMessage>,
     stream: Framed<TcpStream, RESP3Codec>,
     addr: SocketAddr,
+    conn_type: ConnectionType,
     kv_store: KVStoreHandle,
     conn_manager: ConnectionManagerHandle,
 }
 
 #[derive(Debug)]
+pub enum ConnectionType {
+    Master,
+    Client,
+}
+
+#[derive(Debug)]
 pub enum ConnectionMessage {
     ForwardRequest { request: Request },
+    SetConnType { conn_type: ConnectionType },
     Shutdown,
 }
 
 impl Connection {
     pub fn new(
         receiver: mpsc::Receiver<ConnectionMessage>,
-        stream: TcpStream,
+        stream: Framed<TcpStream, RESP3Codec>,
         addr: SocketAddr,
         kv_store: KVStoreHandle,
         conn_manager: ConnectionManagerHandle,
     ) -> Self {
-        let stream = Framed::new(stream, RESP3Codec);
+        let conn_type = ConnectionType::Client;
 
         Connection {
             receiver,
             stream,
+            conn_type,
             addr,
             kv_store,
             conn_manager,
@@ -50,7 +59,16 @@ impl Connection {
             ConnectionMessage::ForwardRequest { request } => {
                 log::info!("Forwarding request: {}", request);
 
-                todo!()
+                let resp3 = encode_request(&request);
+
+                let _ = self
+                    .stream
+                    .send(resp3)
+                    .await
+                    .inspect_err(|err| log::error!("Failed to send request: {:?}", err));
+            }
+            ConnectionMessage::SetConnType { conn_type } => {
+                self.conn_type = conn_type;
             }
             ConnectionMessage::Shutdown {} => {
                 self.receiver.close();
@@ -126,9 +144,9 @@ async fn run_connection(mut connection: Connection, on_shutdown_complete: onesho
                             .broadcast(Request::Del(key.clone()));
                         let del_future = connection.kv_store.del(key);
 
-                        let res = tokio::try_join!(broadcast_future, del_future);
+                        let (_broadcast_res, del_res) = tokio::join!(broadcast_future, del_future);
 
-                        match res {
+                        match del_res {
                             Ok(_) => RESP3Value::SimpleString("OK".to_string()),
                             Err(err) => {
                                 log::error!("Failed to del key: {:?}", err);
@@ -136,7 +154,20 @@ async fn run_connection(mut connection: Connection, on_shutdown_complete: onesho
                             }
                         }
                     }
+                    Request::PSync(_repl_id, _offset) => {
+                        let _ = connection
+                            .conn_manager
+                            .set_replica(connection.addr)
+                            .await
+                            .inspect_err(|err| log::error!("Failed to set replica: {:?}", err));
+
+                        RESP3Value::SimpleString("CONTINUE".to_string())
+                    }
                 };
+
+                if let ConnectionType::Master = connection.conn_type {
+                    continue;
+                }
 
                 log::info!("Sending response: {}", response);
 
@@ -165,7 +196,7 @@ pub struct ConnectionHandle {
 
 impl ConnectionHandle {
     pub fn new(
-        stream: TcpStream,
+        stream: Framed<TcpStream, RESP3Codec>,
         addr: SocketAddr,
         kv_store: KVStoreHandle,
         conn_manager: ConnectionManagerHandle,
@@ -180,6 +211,12 @@ impl ConnectionHandle {
 
     pub async fn forward_request(&self, request: Request) -> Result<()> {
         let msg = ConnectionMessage::ForwardRequest { request };
+        self.sender.send(msg).await?;
+        Ok(())
+    }
+
+    pub async fn set_conn_type(&self, conn_type: ConnectionType) -> Result<()> {
+        let msg = ConnectionMessage::SetConnType { conn_type };
         self.sender.send(msg).await?;
         Ok(())
     }
