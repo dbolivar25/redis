@@ -225,3 +225,205 @@ fn decode_psync_request(data: &[RESP3Value]) -> Result<Request> {
 
     Ok(Request::PSync(data[1].clone(), data[2].clone()))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_ping_request() {
+        let request = Request::Ping;
+        let encoded = encode_request(&request);
+        assert_eq!(
+            encoded,
+            RESP3Value::Array(vec![RESP3Value::BulkString(b"PING".to_vec())])
+        );
+
+        let decoded = decode_request(encoded).unwrap();
+        assert_eq!(decoded, request);
+    }
+
+    #[test]
+    fn test_echo_request() {
+        let message = RESP3Value::BulkString(b"Hello, World!".to_vec());
+        let request = Request::Echo(message.clone());
+        let encoded = encode_request(&request);
+        assert_eq!(
+            encoded,
+            RESP3Value::Array(vec![
+                RESP3Value::BulkString(b"ECHO".to_vec()),
+                message.clone()
+            ])
+        );
+
+        let decoded = decode_request(encoded).unwrap();
+        assert_eq!(decoded, request);
+    }
+
+    #[test]
+    fn test_set_request_without_ttl() {
+        let key = RESP3Value::BulkString(b"mykey".to_vec());
+        let value = RESP3Value::BulkString(b"myvalue".to_vec());
+        let request = Request::Set(key.clone(), value.clone(), None);
+        let encoded = encode_request(&request);
+        assert_eq!(
+            encoded,
+            RESP3Value::Array(vec![
+                RESP3Value::BulkString(b"SET".to_vec()),
+                key.clone(),
+                value.clone()
+            ])
+        );
+
+        let decoded = decode_request(encoded).unwrap();
+        assert_eq!(decoded, request);
+    }
+
+    #[test]
+    fn test_set_request_with_seconds_ttl() {
+        let key = RESP3Value::BulkString(b"mykey".to_vec());
+        let value = RESP3Value::BulkString(b"myvalue".to_vec());
+        let ttl = Some(TTL::Seconds(60));
+        let request = Request::Set(key.clone(), value.clone(), ttl.clone());
+        let encoded = encode_request(&request);
+        assert_eq!(
+            encoded,
+            RESP3Value::Array(vec![
+                RESP3Value::BulkString(b"SET".to_vec()),
+                key.clone(),
+                value.clone(),
+                RESP3Value::BulkString(b"EX".to_vec()),
+                RESP3Value::BulkString(b"60".to_vec()),
+            ])
+        );
+
+        let decoded = decode_request(encoded).unwrap();
+        assert_eq!(decoded, request);
+    }
+
+    #[test]
+    fn test_set_request_with_milliseconds_ttl() {
+        let key = RESP3Value::BulkString(b"mykey".to_vec());
+        let value = RESP3Value::BulkString(b"myvalue".to_vec());
+        let ttl = Some(TTL::Milliseconds(1000));
+        let request = Request::Set(key.clone(), value.clone(), ttl.clone());
+        let encoded = encode_request(&request);
+        assert_eq!(
+            encoded,
+            RESP3Value::Array(vec![
+                RESP3Value::BulkString(b"SET".to_vec()),
+                key.clone(),
+                value.clone(),
+                RESP3Value::BulkString(b"PX".to_vec()),
+                RESP3Value::BulkString(b"1000".to_vec()),
+            ])
+        );
+
+        let decoded = decode_request(encoded).unwrap();
+        assert_eq!(decoded, request);
+    }
+
+    #[test]
+    fn test_get_request() {
+        let key = RESP3Value::BulkString(b"mykey".to_vec());
+        let request = Request::Get(key.clone());
+        let encoded = encode_request(&request);
+        assert_eq!(
+            encoded,
+            RESP3Value::Array(vec![RESP3Value::BulkString(b"GET".to_vec()), key.clone()])
+        );
+
+        let decoded = decode_request(encoded).unwrap();
+        assert_eq!(decoded, request);
+    }
+
+    #[test]
+    fn test_del_request() {
+        let key = RESP3Value::BulkString(b"mykey".to_vec());
+        let request = Request::Del(key.clone());
+        let encoded = encode_request(&request);
+        assert_eq!(
+            encoded,
+            RESP3Value::Array(vec![RESP3Value::BulkString(b"DEL".to_vec()), key.clone()])
+        );
+
+        let decoded = decode_request(encoded).unwrap();
+        assert_eq!(decoded, request);
+    }
+
+    #[test]
+    fn test_psync_request() {
+        let repl_id = RESP3Value::BulkString(b"8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb".to_vec());
+        let offset = RESP3Value::BulkString(b"1234".to_vec());
+        let request = Request::PSync(repl_id.clone(), offset.clone());
+        let encoded = encode_request(&request);
+        assert_eq!(
+            encoded,
+            RESP3Value::Array(vec![
+                RESP3Value::BulkString(b"PSYNC".to_vec()),
+                repl_id.clone(),
+                offset.clone()
+            ])
+        );
+
+        let decoded = decode_request(encoded).unwrap();
+        assert_eq!(decoded, request);
+    }
+
+    #[test]
+    fn test_invalid_request() {
+        let invalid_request = RESP3Value::SimpleString("Invalid".to_string());
+        assert!(decode_request(invalid_request).is_err());
+    }
+
+    #[test]
+    fn test_invalid_command() {
+        let invalid_command = RESP3Value::Array(vec![RESP3Value::BulkString(b"INVALID".to_vec())]);
+        assert!(decode_request(invalid_command).is_err());
+    }
+
+    #[test]
+    fn test_invalid_ping_request() {
+        let invalid_ping = RESP3Value::Array(vec![
+            RESP3Value::BulkString(b"PING".to_vec()),
+            RESP3Value::BulkString(b"extra".to_vec()),
+        ]);
+        assert!(decode_request(invalid_ping).is_err());
+    }
+
+    #[test]
+    fn test_invalid_echo_request() {
+        let invalid_echo = RESP3Value::Array(vec![RESP3Value::BulkString(b"ECHO".to_vec())]);
+        assert!(decode_request(invalid_echo).is_err());
+    }
+
+    #[test]
+    fn test_invalid_set_request() {
+        let invalid_set = RESP3Value::Array(vec![
+            RESP3Value::BulkString(b"SET".to_vec()),
+            RESP3Value::BulkString(b"key".to_vec()),
+        ]);
+        assert!(decode_request(invalid_set).is_err());
+    }
+
+    #[test]
+    fn test_invalid_get_request() {
+        let invalid_get = RESP3Value::Array(vec![RESP3Value::BulkString(b"GET".to_vec())]);
+        assert!(decode_request(invalid_get).is_err());
+    }
+
+    #[test]
+    fn test_invalid_del_request() {
+        let invalid_del = RESP3Value::Array(vec![RESP3Value::BulkString(b"DEL".to_vec())]);
+        assert!(decode_request(invalid_del).is_err());
+    }
+
+    #[test]
+    fn test_invalid_psync_request() {
+        let invalid_psync = RESP3Value::Array(vec![
+            RESP3Value::BulkString(b"PSYNC".to_vec()),
+            RESP3Value::BulkString(b"repl_id".to_vec()),
+        ]);
+        assert!(decode_request(invalid_psync).is_err());
+    }
+}
