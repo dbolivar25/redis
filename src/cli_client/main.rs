@@ -41,9 +41,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Commands::Del { key } => Request::Del(RESP3Value::BulkString(key.into_bytes())),
     };
 
+    let request = encode_request(&request);
+
     let start = Instant::now();
 
-    sink.send(encode_request(&request)).await?;
+    sink.send(request).await?;
     let response = stream.next().await;
 
     if let Some(Ok(response)) = response {
