@@ -16,12 +16,12 @@ log4rs = "1.3.0"
 
 [[bin]]
 name = "redis"
-path = "src/server_main.rs"
+path = "src/server/main.rs"
 
 [[bin]]
 name = "redis_cli"
-path = "src/cli_client_main.rs"
+path = "src/cli_client/main.rs"
 
 [[bin]]
 name = "redis_tui"
-path = "src/tui_client_main.rs"
+path = "src/tui_client/main.rs"

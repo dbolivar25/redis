@@ -1,7 +1,7 @@
 use clap::Parser;
 use futures::{SinkExt, StreamExt};
 use redis::{
-    client::cli::{Args, Commands, TTLOpt},
+    cli_client::cli::{Args, Commands, TTLOpt},
     common::{
         codec::{encode_request, RESP3Codec, Request, TTL},
         resp3::RESP3Value,
