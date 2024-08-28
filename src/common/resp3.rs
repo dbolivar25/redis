@@ -49,6 +49,8 @@ pub fn encode_resp3(value: &RESP3Value) -> String {
 }
 
 pub fn decode_resp3(input: &[u8]) -> Result<(RESP3Value, &[u8])> {
+    debug_assert!(!input.is_empty());
+
     match input.first() {
         Some(b'+') => decode_simple_string(&input[1..]),
         Some(b'-') => decode_simple_error(&input[1..]),
@@ -61,26 +63,30 @@ pub fn decode_resp3(input: &[u8]) -> Result<(RESP3Value, &[u8])> {
 }
 
 fn decode_simple_string(input: &[u8]) -> Result<(RESP3Value, &[u8])> {
-    let (s, rest) = read_until_crlf(input)?;
+    let (s, rest) = read_through_crlf(input)?;
+
+    debug_assert!(!s.contains('\r') && !s.contains('\n'));
 
     Ok((RESP3Value::SimpleString(s), rest))
 }
 
 fn decode_simple_error(input: &[u8]) -> Result<(RESP3Value, &[u8])> {
-    let (s, rest) = read_until_crlf(input)?;
+    let (s, rest) = read_through_crlf(input)?;
+
+    debug_assert!(!s.contains('\r') && !s.contains('\n'));
 
     Ok((RESP3Value::SimpleError(s), rest))
 }
 
 fn decode_integer(input: &[u8]) -> Result<(RESP3Value, &[u8])> {
-    let (s, rest) = read_until_crlf(input)?;
+    let (s, rest) = read_through_crlf(input)?;
     let n = s.parse::<i64>().map_err(|e| anyhow!(e))?;
 
     Ok((RESP3Value::Integer(n), rest))
 }
 
 fn decode_bulk_string(input: &[u8]) -> Result<(RESP3Value, &[u8])> {
-    let (len_str, rest) = read_until_crlf(input)?;
+    let (len_str, rest) = read_through_crlf(input)?;
     if len_str == "-1" {
         let rest = rest
             .get(2..)
@@ -93,11 +99,13 @@ fn decode_bulk_string(input: &[u8]) -> Result<(RESP3Value, &[u8])> {
     }
     let data = rest[..len].to_vec();
 
+    debug_assert_eq!(data.len(), len);
+
     Ok((RESP3Value::BulkString(data), &rest[len + 2..]))
 }
 
 fn decode_array(input: &[u8]) -> Result<(RESP3Value, &[u8])> {
-    let (len_str, mut rest) = read_until_crlf(input)?;
+    let (len_str, mut rest) = read_through_crlf(input)?;
     if len_str == "-1" {
         let rest = rest
             .get(2..)
@@ -112,6 +120,8 @@ fn decode_array(input: &[u8]) -> Result<(RESP3Value, &[u8])> {
         rest = new_rest;
     }
 
+    debug_assert_eq!(values.len(), len);
+
     Ok((RESP3Value::Array(values), rest))
 }
 
@@ -122,7 +132,7 @@ fn decode_null(input: &[u8]) -> Result<(RESP3Value, &[u8])> {
     }
 }
 
-fn read_until_crlf(input: &[u8]) -> Result<(String, &[u8])> {
+fn read_through_crlf(input: &[u8]) -> Result<(String, &[u8])> {
     if let Some((pos, _)) = input.iter().find_position(|&&b| b == b'\r') {
         if let Some(&b'\n') = input.get(pos + 1) {
             let s = str::from_utf8(&input[..pos]).map_err(|e| anyhow!(e))?;
@@ -145,6 +155,10 @@ mod tests {
         let (value, rest) = decode_resp3(input).unwrap();
         assert_eq!(value, RESP3Value::SimpleString("OK".to_string()));
         assert!(rest.is_empty());
+
+        let encoded = encode_resp3(&value);
+        let expected = String::from_utf8_lossy(input);
+        assert_eq!(encoded, expected);
     }
 
     #[test]
@@ -153,6 +167,10 @@ mod tests {
         let (value, rest) = decode_resp3(input).unwrap();
         assert_eq!(value, RESP3Value::SimpleError("Error message".to_string()));
         assert!(rest.is_empty());
+
+        let encoded = encode_resp3(&value);
+        let expected = String::from_utf8_lossy(input);
+        assert_eq!(encoded, expected);
     }
 
     #[test]
@@ -161,6 +179,10 @@ mod tests {
         let (value, rest) = decode_resp3(input).unwrap();
         assert_eq!(value, RESP3Value::Integer(1000));
         assert!(rest.is_empty());
+
+        let encoded = encode_resp3(&value);
+        let expected = String::from_utf8_lossy(input);
+        assert_eq!(encoded, expected);
     }
 
     #[test]
@@ -169,6 +191,10 @@ mod tests {
         let (value, rest) = decode_resp3(input).unwrap();
         assert_eq!(value, RESP3Value::BulkString(b"hello".to_vec()));
         assert!(rest.is_empty());
+
+        let encoded = encode_resp3(&value);
+        let expected = String::from_utf8_lossy(input);
+        assert_eq!(encoded, expected);
     }
 
     #[test]
@@ -177,6 +203,10 @@ mod tests {
         let (value, rest) = decode_resp3(input).unwrap();
         assert_eq!(value, RESP3Value::Null);
         assert!(rest.is_empty());
+
+        let encoded = encode_resp3(&value);
+        let expected = String::from_utf8_lossy(input);
+        assert_eq!(encoded, expected);
     }
 
     #[test]
@@ -191,5 +221,9 @@ mod tests {
             ])
         );
         assert!(rest.is_empty());
+
+        let encoded = encode_resp3(&value);
+        let expected = String::from_utf8_lossy(input);
+        assert_eq!(encoded, expected);
     }
 }
