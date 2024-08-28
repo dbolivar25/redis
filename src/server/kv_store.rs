@@ -150,3 +150,174 @@ impl KVStoreHandle {
         Ok(())
     }
 }
+
+#[tokio::test]
+async fn test_set_and_get() {
+    let (kv_store, _) = KVStoreHandle::new();
+
+    let key = RESP3Value::BulkString(b"test_key".to_vec());
+    let value = RESP3Value::BulkString(b"test_value".to_vec());
+
+    kv_store
+        .set(key.clone(), value.clone(), None)
+        .await
+        .unwrap();
+
+    let result = kv_store.get(key).await.unwrap();
+    assert_eq!(result, Some(value));
+
+    kv_store.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn test_set_with_ttl_and_get() {
+    let (kv_store, _) = KVStoreHandle::new();
+
+    let key = RESP3Value::BulkString(b"test_key".to_vec());
+    let value = RESP3Value::BulkString(b"test_value".to_vec());
+
+    kv_store
+        .set(key.clone(), value.clone(), Some(TTL::Milliseconds(200)))
+        .await
+        .unwrap();
+
+    let result = kv_store.get(key.clone()).await.unwrap();
+    assert_eq!(result, Some(value));
+
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    let result = kv_store.get(key).await.unwrap();
+    assert_eq!(result, None);
+
+    kv_store.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn test_del() {
+    let (kv_store, _) = KVStoreHandle::new();
+
+    let key = RESP3Value::BulkString(b"test_key".to_vec());
+    let value = RESP3Value::BulkString(b"test_value".to_vec());
+
+    kv_store.set(key.clone(), value, None).await.unwrap();
+    kv_store.del(key.clone()).await.unwrap();
+
+    let result = kv_store.get(key).await.unwrap();
+    assert_eq!(result, None);
+
+    kv_store.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn test_multiple_sets() {
+    let (kv_store, _) = KVStoreHandle::new();
+
+    let key1 = RESP3Value::BulkString(b"key1".to_vec());
+    let value1 = RESP3Value::BulkString(b"value1".to_vec());
+    let key2 = RESP3Value::BulkString(b"key2".to_vec());
+    let value2 = RESP3Value::BulkString(b"value2".to_vec());
+
+    kv_store
+        .set(key1.clone(), value1.clone(), None)
+        .await
+        .unwrap();
+    kv_store
+        .set(key2.clone(), value2.clone(), None)
+        .await
+        .unwrap();
+
+    let result1 = kv_store.get(key1).await.unwrap();
+    let result2 = kv_store.get(key2).await.unwrap();
+
+    assert_eq!(result1, Some(value1));
+    assert_eq!(result2, Some(value2));
+
+    kv_store.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn test_overwrite_value() {
+    let (kv_store, _) = KVStoreHandle::new();
+
+    let key = RESP3Value::BulkString(b"test_key".to_vec());
+    let value1 = RESP3Value::BulkString(b"value1".to_vec());
+    let value2 = RESP3Value::BulkString(b"value2".to_vec());
+
+    kv_store.set(key.clone(), value1, None).await.unwrap();
+    kv_store
+        .set(key.clone(), value2.clone(), None)
+        .await
+        .unwrap();
+
+    let result = kv_store.get(key).await.unwrap();
+    assert_eq!(result, Some(value2));
+
+    kv_store.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn test_get_non_existent_key() {
+    let (kv_store, _) = KVStoreHandle::new();
+
+    let key = RESP3Value::BulkString(b"non_existent_key".to_vec());
+
+    let result = kv_store.get(key).await.unwrap();
+    assert_eq!(result, None);
+
+    kv_store.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn test_del_non_existent_key() {
+    let (kv_store, _) = KVStoreHandle::new();
+
+    let key = RESP3Value::BulkString(b"non_existent_key".to_vec());
+
+    // Deleting a non-existent key should not cause an error
+    kv_store.del(key).await.unwrap();
+
+    kv_store.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn test_ttl_milliseconds() {
+    let (kv_store, _) = KVStoreHandle::new();
+
+    let key = RESP3Value::BulkString(b"test_key".to_vec());
+    let value = RESP3Value::BulkString(b"test_value".to_vec());
+
+    kv_store
+        .set(key.clone(), value.clone(), Some(TTL::Milliseconds(300)))
+        .await
+        .unwrap();
+
+    let result = kv_store.get(key.clone()).await.unwrap();
+    assert_eq!(result, Some(value));
+
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    let result = kv_store.get(key).await.unwrap();
+    assert_eq!(result, None);
+
+    kv_store.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn test_shutdown() {
+    let (kv_store, shutdown_complete) = KVStoreHandle::new();
+
+    kv_store.shutdown().await.unwrap();
+
+    // Wait for the shutdown to complete
+    shutdown_complete.await.unwrap();
+
+    // Attempting to use the KVStore after shutdown should result in an error
+    let key = RESP3Value::BulkString(b"test_key".to_vec());
+    let value = RESP3Value::BulkString(b"test_value".to_vec());
+
+    let result = kv_store.set(key.clone(), value, None).await;
+    assert!(result.is_err());
+
+    let result = kv_store.get(key).await;
+    assert!(result.is_err());
+}
