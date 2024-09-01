@@ -1,4 +1,4 @@
-use super::connection::{ConnectionHandle, ConnectionType};
+use super::connection::ConnectionHandle;
 use crate::common::codec::Request;
 use anyhow::Result;
 use futures::future;
@@ -7,19 +7,19 @@ use tokio::sync::{mpsc, oneshot};
 
 pub struct ConnectionManager {
     receiver: mpsc::Receiver<ConnectionManagerMessage>,
-    master: Option<ConnectionHandle>,
+    master: Option<(ConnectionHandle, oneshot::Receiver<()>)>,
     clients: Vec<(ConnectionHandle, oneshot::Receiver<()>)>,
     replicas: Vec<(ConnectionHandle, oneshot::Receiver<()>)>,
 }
 
 #[derive(Debug)]
 pub enum ConnectionManagerMessage {
-    AddMaster {
-        connection: ConnectionHandle,
-    },
     AddClient {
         connection: ConnectionHandle,
         connection_shutdown_complete: oneshot::Receiver<()>,
+    },
+    SetMaster {
+        addr: SocketAddr,
     },
     SetReplica {
         addr: SocketAddr,
@@ -36,7 +36,7 @@ pub enum ConnectionManagerMessage {
 impl ConnectionManager {
     pub fn new(
         receiver: mpsc::Receiver<ConnectionManagerMessage>,
-        master: Option<ConnectionHandle>,
+        master: Option<(ConnectionHandle, oneshot::Receiver<()>)>,
         clients: Vec<(ConnectionHandle, oneshot::Receiver<()>)>,
         replicas: Vec<(ConnectionHandle, oneshot::Receiver<()>)>,
     ) -> Self {
@@ -50,21 +50,33 @@ impl ConnectionManager {
 
     pub async fn handle_message(&mut self, msg: ConnectionManagerMessage) {
         match msg {
-            ConnectionManagerMessage::AddMaster { connection } => {
-                if !self.master.is_none() {
-                    log::warn!("Replacing existing master connection");
-                    self.master.take().unwrap().shutdown().await.ok();
-                }
-
-                let _ = connection.set_conn_type(ConnectionType::Master).await;
-                self.master = Some(connection);
-            }
             ConnectionManagerMessage::AddClient {
                 connection,
                 connection_shutdown_complete,
             } => {
                 self.clients
                     .push((connection, connection_shutdown_complete));
+            }
+            ConnectionManagerMessage::SetMaster { addr } => {
+                if let Some(idx) = self.clients.iter().position(|(c, _)| c.addr == addr) {
+                    let entry = self.clients.remove(idx);
+                    if let Some((existing_master, existing_master_shutdown)) =
+                        self.master.replace(entry)
+                    {
+                        log::warn!("Replacing existing master connection");
+                        existing_master
+                            .shutdown()
+                            .await
+                            .inspect_err(|err| {
+                                log::error!(
+                                    "Failed to shut down existing master connection: {:?}",
+                                    err
+                                )
+                            })
+                            .ok();
+                        let _ = existing_master_shutdown.await;
+                    }
+                }
             }
             ConnectionManagerMessage::SetReplica { addr } => {
                 if let Some(idx) = self.clients.iter().position(|(c, _)| c.addr == addr) {
@@ -96,8 +108,14 @@ impl ConnectionManager {
 
                 let _ = tokio::join!(client_shutdowns, replica_shutdowns);
 
-                if let Some(master) = self.master.take() {
-                    let _ = master.shutdown().await;
+                if let Some((master_connection, _)) = self.master.as_ref() {
+                    master_connection
+                        .shutdown()
+                        .await
+                        .inspect_err(|err| {
+                            log::error!("Failed to shut down master connection: {:?}", err)
+                        })
+                        .ok();
                 }
 
                 self.receiver.close();
@@ -132,6 +150,10 @@ async fn run_connection_manager(
 
     let _ = future::join_all(connection_shutdown_channels).await;
 
+    if let Some((_, master_shutdown)) = connection_manager.master.take() {
+        let _ = master_shutdown.await;
+    }
+
     log::info!("Connection manager shut down");
     on_shutdown_complete.send(()).ok();
 }
@@ -154,8 +176,8 @@ impl ConnectionManagerHandle {
         (ConnectionManagerHandle { sender }, shutdown_complete)
     }
 
-    pub async fn add_master(&self, connection: ConnectionHandle) -> Result<()> {
-        let msg = ConnectionManagerMessage::AddMaster { connection };
+    pub async fn set_master(&self, addr: SocketAddr) -> Result<()> {
+        let msg = ConnectionManagerMessage::SetMaster { addr };
         self.sender.send(msg).await?;
         Ok(())
     }

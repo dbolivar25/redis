@@ -1,4 +1,4 @@
-use crate::common::{codec::TTL, resp3::RESP3Value};
+use crate::common::resp3::RESP3Value;
 use anyhow::Result;
 use std::collections::HashMap;
 use tokio::sync::{mpsc, oneshot};
@@ -47,20 +47,20 @@ impl KVStore {
             KVStoreMessage::Set { key, value } => {
                 let _ = self.kv_store.insert(key, value);
             }
-            KVStoreMessage::Get { key, respond_to } => {
-                let value = self.kv_store.get(&key).cloned();
-
-                if let Some((_, Some(expiry))) = value {
-                    if expiry < Instant::now() {
-                        self.kv_store.remove(&key);
-                    }
+            KVStoreMessage::Get { key, respond_to } => match self.kv_store.get(&key).cloned() {
+                Some((_value, Some(expiry))) if expiry < Instant::now() => {
+                    self.kv_store.remove(&key);
+                    let _ = respond_to
+                        .send(None)
+                        .inspect_err(|err| log::error!("Failed to send response: {:?}", err));
                 }
-
-                let value = value.map(|(value, _)| value);
-                let _ = respond_to
-                    .send(value)
-                    .inspect_err(|err| log::error!("Failed to send response: {:?}", err));
-            }
+                value => {
+                    let value = value.map(|(value, _)| value);
+                    let _ = respond_to
+                        .send(value)
+                        .inspect_err(|err| log::error!("Failed to send response: {:?}", err));
+                }
+            },
             KVStoreMessage::Del { key } => {
                 let _ = self.kv_store.remove(&key);
             }
@@ -70,9 +70,9 @@ impl KVStore {
         }
     }
 
-    fn remove_expired(&mut self, now: Instant) {
+    fn remove_expired(&mut self, instant: Instant) {
         self.kv_store
-            .retain(|_, (_, expiry)| expiry.map_or(true, |expiry| expiry > now));
+            .retain(|_, (_, expiry)| expiry.map_or(true, |expiry| expiry > instant));
     }
 }
 
@@ -106,7 +106,7 @@ impl KVStoreHandle {
     pub fn new() -> (Self, oneshot::Receiver<()>) {
         let (sender, receiver) = mpsc::channel(32);
         let (on_shutdown_complete, shutdown_complete) = oneshot::channel();
-        let active_expiration_interval_period = Duration::from_secs(1);
+        let active_expiration_interval_period = Duration::from_millis(200);
         let active_expiration_interval = interval_at(
             Instant::now() + active_expiration_interval_period,
             active_expiration_interval_period,
@@ -118,14 +118,13 @@ impl KVStoreHandle {
         (KVStoreHandle { sender }, shutdown_complete)
     }
 
-    pub async fn set(&self, key: RESP3Value, value: RESP3Value, ttl: Option<TTL>) -> Result<()> {
-        let value = (
-            value,
-            ttl.map(|ttl| match ttl {
-                TTL::Seconds(ttl) => Instant::now() + Duration::from_secs(ttl),
-                TTL::Milliseconds(ttl) => Instant::now() + Duration::from_millis(ttl),
-            }),
-        );
+    pub async fn set(
+        &self,
+        key: RESP3Value,
+        value: RESP3Value,
+        expiration: Option<Instant>,
+    ) -> Result<()> {
+        let value = (value, expiration);
         let msg = KVStoreMessage::Set { key, value };
         self.sender.send(msg).await?;
         Ok(())
@@ -177,14 +176,18 @@ async fn test_set_with_ttl_and_get() {
     let value = RESP3Value::BulkString(b"test_value".to_vec());
 
     kv_store
-        .set(key.clone(), value.clone(), Some(TTL::Milliseconds(200)))
+        .set(
+            key.clone(),
+            value.clone(),
+            Some(Instant::now() + Duration::from_millis(45)),
+        )
         .await
         .unwrap();
 
     let result = kv_store.get(key.clone()).await.unwrap();
     assert_eq!(result, Some(value));
 
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
 
     let result = kv_store.get(key).await.unwrap();
     assert_eq!(result, None);
@@ -287,14 +290,18 @@ async fn test_ttl_milliseconds() {
     let value = RESP3Value::BulkString(b"test_value".to_vec());
 
     kv_store
-        .set(key.clone(), value.clone(), Some(TTL::Milliseconds(300)))
+        .set(
+            key.clone(),
+            value.clone(),
+            Some(Instant::now() + Duration::from_millis(15)),
+        )
         .await
         .unwrap();
 
     let result = kv_store.get(key.clone()).await.unwrap();
     assert_eq!(result, Some(value));
 
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    tokio::time::sleep(Duration::from_millis(20)).await;
 
     let result = kv_store.get(key).await.unwrap();
     assert_eq!(result, None);

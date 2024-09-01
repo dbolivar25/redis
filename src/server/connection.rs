@@ -1,14 +1,15 @@
 use super::{connection_manager::ConnectionManagerHandle, kv_store::KVStoreHandle};
 use crate::common::{
-    codec::{decode_request, encode_request, RESP3Codec, Request},
+    codec::{decode_request, encode_request, RESP3Codec, Request, TTL},
     resp3::RESP3Value,
 };
 use anyhow::Result;
 use futures::{SinkExt, StreamExt};
-use std::net::SocketAddr;
+use std::{net::SocketAddr, time::Duration};
 use tokio::{
     net::TcpStream,
     sync::{mpsc, oneshot},
+    time::Instant,
 };
 use tokio_util::codec::Framed;
 
@@ -24,6 +25,7 @@ pub struct Connection {
 #[derive(Debug)]
 pub enum ConnectionType {
     Master,
+    Replica,
     Client,
 }
 
@@ -69,6 +71,53 @@ impl Connection {
             }
             ConnectionMessage::SetConnType { conn_type } => {
                 self.conn_type = conn_type;
+
+                if let ConnectionType::Master = self.conn_type {
+                    let ping_req = encode_request(&Request::Ping);
+                    let _ =
+                        self.stream.send(ping_req).await.inspect_err(|err| {
+                            log::error!("Failed to send PING to master: {:?}", err)
+                        });
+
+                    let response = self.stream.next().await;
+
+                    if let Some(Ok(RESP3Value::SimpleString(response))) = response {
+                        if response != "PONG" {
+                            log::error!("Failed to PING master: {:?}", response);
+                            return;
+                        }
+                    } else {
+                        log::error!("Failed to PING master: {:?}", response);
+                        return;
+                    }
+
+                    let psync_req = encode_request(&Request::PSync(
+                        RESP3Value::BulkString(b"?".to_vec()),
+                        RESP3Value::BulkString(b"-1".to_vec()),
+                    ));
+
+                    let _ = self.stream.send(psync_req).await.inspect_err(|err| {
+                        log::error!("Failed to send PSYNC to master: {:?}", err)
+                    });
+
+                    let response = self.stream.next().await;
+
+                    if let Some(Ok(RESP3Value::SimpleString(response))) = response {
+                        if response != "CONTINUE" {
+                            log::error!("Failed to PSYNC master: {:?}", response);
+                            return;
+                        }
+                    } else {
+                        log::error!("Failed to PSYNC master: {:?}", response);
+                        return;
+                    }
+
+                    let _ = self
+                        .conn_manager
+                        .set_master(self.addr)
+                        .await
+                        .inspect_err(|err| log::error!("Failed to add master: {:?}", err));
+                }
             }
             ConnectionMessage::Shutdown {} => {
                 self.receiver.close();
@@ -111,13 +160,18 @@ async fn run_connection(mut connection: Connection, on_shutdown_complete: onesho
                 let response = match request {
                     Request::Ping => RESP3Value::SimpleString("PONG".to_string()),
                     Request::Echo(value) => value,
-                    Request::Set(key, value, expiration) => {
+                    Request::Set(key, value, ttl) => {
+                        let expiration = ttl.as_ref().map(|expiration| Instant::now() + match expiration {
+                            TTL::Seconds(ttl) => Duration::from_secs(*ttl),
+                            TTL::Milliseconds(ttl) => Duration::from_millis(*ttl),
+                        });
+
                         let broadcast_future = connection
                             .conn_manager
-                            .broadcast(Request::Set(key.clone(), value.clone(), expiration.clone()));
+                            .broadcast(Request::Set(key.clone(), value.clone(), ttl));
                         let set_future = connection.kv_store.set(key, value, expiration);
 
-                        let (_brodcast_result, set_result) = tokio::join!(broadcast_future, set_future);
+                        let (_broadcast_result, set_result) = tokio::join!(broadcast_future, set_future);
 
                         match set_result {
                             Ok(_) => RESP3Value::SimpleString("OK".to_string()),
