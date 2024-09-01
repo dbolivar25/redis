@@ -39,7 +39,7 @@ async fn send_command(client: &mut Framed<TcpStream, RESP3Codec>, command: Reque
     response
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn test_ping() {
     let (join_handle, server_addr) = start_server().await;
     let mut client = connect_client(server_addr).await;
@@ -50,7 +50,7 @@ async fn test_ping() {
     join_handle.abort();
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn test_echo() {
     let (join_handle, server_addr) = start_server().await;
     let mut client = connect_client(server_addr).await;
@@ -62,7 +62,7 @@ async fn test_echo() {
     join_handle.abort();
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn test_set_get() {
     let (join_handle, server_addr) = start_server().await;
     let mut client = connect_client(server_addr).await;
@@ -79,7 +79,7 @@ async fn test_set_get() {
     join_handle.abort();
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn test_set_with_ttl() {
     let (join_handle, server_addr) = start_server().await;
     let mut client = connect_client(server_addr).await;
@@ -102,7 +102,7 @@ async fn test_set_with_ttl() {
     join_handle.abort();
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn test_del() {
     let (join_handle, server_addr) = start_server().await;
     let mut client = connect_client(server_addr).await;
@@ -120,4 +120,164 @@ async fn test_del() {
     assert_eq!(response, RESP3Value::Null);
 
     join_handle.abort();
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_multiple_clients() {
+    let (join_handle, server_addr) = start_server().await;
+    let mut client1 = connect_client(server_addr).await;
+    let mut client2 = connect_client(server_addr).await;
+
+    let key = RESP3Value::BulkString(b"shared_key".to_vec());
+    let value1 = RESP3Value::BulkString(b"value1".to_vec());
+    let value2 = RESP3Value::BulkString(b"value2".to_vec());
+
+    // Client 1 sets a value
+    let response = send_command(
+        &mut client1,
+        Request::Set(key.clone(), value1.clone(), None),
+    )
+    .await;
+    assert_eq!(response, RESP3Value::SimpleString("OK".to_string()));
+
+    // Client 2 reads the value
+    let response = send_command(&mut client2, Request::Get(key.clone())).await;
+    assert_eq!(response, value1);
+
+    // Client 2 updates the value
+    let response = send_command(
+        &mut client2,
+        Request::Set(key.clone(), value2.clone(), None),
+    )
+    .await;
+    assert_eq!(response, RESP3Value::SimpleString("OK".to_string()));
+
+    // Client 1 reads the updated value
+    let response = send_command(&mut client1, Request::Get(key)).await;
+    assert_eq!(response, value2);
+
+    join_handle.abort();
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_concurrent_operations() {
+    let (join_handle, server_addr) = start_server().await;
+    let mut client1 = connect_client(server_addr).await;
+    let mut client2 = connect_client(server_addr).await;
+
+    let key = RESP3Value::BulkString(b"concurrent_key".to_vec());
+    let value1 = RESP3Value::BulkString(b"value1".to_vec());
+    let value2 = RESP3Value::BulkString(b"value2".to_vec());
+
+    // Concurrent SET operations
+    let (response1, response2) = tokio::join!(
+        send_command(
+            &mut client1,
+            Request::Set(key.clone(), value1.clone(), None)
+        ),
+        send_command(
+            &mut client2,
+            Request::Set(key.clone(), value2.clone(), None)
+        )
+    );
+
+    assert!(matches!(response1, RESP3Value::SimpleString(_)));
+    assert!(matches!(response2, RESP3Value::SimpleString(_)));
+
+    // Check the final value (it should be one of the two values)
+    let response = send_command(&mut client1, Request::Get(key)).await;
+    assert!(response == value1 || response == value2);
+
+    join_handle.abort();
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_ttl_race_condition() {
+    let (join_handle, server_addr) = start_server().await;
+    let mut client1 = connect_client(server_addr).await;
+    let mut client2 = connect_client(server_addr).await;
+
+    let key = RESP3Value::BulkString(b"ttl_key".to_vec());
+    let value = RESP3Value::BulkString(b"ttl_value".to_vec());
+
+    // Set a key with a short TTL
+    let response = send_command(
+        &mut client1,
+        Request::Set(key.clone(), value.clone(), Some(TTL::Milliseconds(50))),
+    )
+    .await;
+    assert_eq!(response, RESP3Value::SimpleString("OK".to_string()));
+
+    // Wait for almost the entire TTL duration
+    tokio::time::sleep(Duration::from_millis(45)).await;
+
+    // Concurrent GET and SET operations
+    let (get_response, set_response) = tokio::join!(
+        send_command(&mut client1, Request::Get(key.clone())),
+        send_command(&mut client2, Request::Set(key.clone(), value.clone(), None))
+    );
+
+    // The GET operation might return the value or Null, depending on timing
+    assert!(get_response == value || get_response == RESP3Value::Null);
+
+    // The SET operation should always succeed
+    assert_eq!(set_response, RESP3Value::SimpleString("OK".to_string()));
+
+    // Wait a bit longer to ensure the original TTL has expired
+    tokio::time::sleep(Duration::from_millis(10)).await;
+
+    // The key should still exist due to the SET operation
+    let response = send_command(&mut client1, Request::Get(key)).await;
+    assert_eq!(response, value);
+
+    join_handle.abort();
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_large_data() {
+    let (join_handle, server_addr) = start_server().await;
+    let mut client = connect_client(server_addr).await;
+
+    let key = RESP3Value::BulkString(b"large_key".to_vec());
+    let large_value = RESP3Value::BulkString(vec![b'a'; 8_000]); // 8 KB of data is max
+
+    // Set large value
+    let response = send_command(
+        &mut client,
+        Request::Set(key.clone(), large_value.clone(), None),
+    )
+    .await;
+    assert_eq!(response, RESP3Value::SimpleString("OK".to_string()));
+
+    // Get large value
+    let response = send_command(&mut client, Request::Get(key)).await;
+    assert_eq!(response, large_value);
+
+    join_handle.abort();
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_server_restart() {
+    let (join_handle, server_addr) = start_server().await;
+    let mut client = connect_client(server_addr).await;
+
+    let key = RESP3Value::BulkString(b"restart_key".to_vec());
+    let value = RESP3Value::BulkString(b"restart_value".to_vec());
+
+    // Set a value
+    let response = send_command(&mut client, Request::Set(key.clone(), value.clone(), None)).await;
+    assert_eq!(response, RESP3Value::SimpleString("OK".to_string()));
+
+    // Stop the server
+    join_handle.abort();
+
+    // Start a new server instance
+    let (new_join_handle, new_server_addr) = start_server().await;
+    let mut new_client = connect_client(new_server_addr).await;
+
+    // Try to get the value (it should be gone after restart)
+    let response = send_command(&mut new_client, Request::Get(key)).await;
+    assert_eq!(response, RESP3Value::Null);
+
+    new_join_handle.abort();
 }
