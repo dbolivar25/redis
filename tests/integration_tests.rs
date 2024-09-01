@@ -223,6 +223,9 @@ async fn test_ttl_race_condition() {
     // The SET operation should always succeed
     assert_eq!(set_response, RESP3Value::SimpleString("OK".to_string()));
 
+    let response = send_command(&mut client1, Request::Get(key.clone())).await;
+    assert_eq!(response, value);
+
     // Wait a bit longer to ensure the original TTL has expired
     tokio::time::sleep(Duration::from_millis(10)).await;
 

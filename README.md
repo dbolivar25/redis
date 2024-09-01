@@ -1,6 +1,6 @@
-# Redis Server and Client
+# Redis Server and Client in Rust
 
-This project implements a Redis key-value store server and client in Rust. It provides a subset of Redis functionality, including basic operations like SET, GET, DEL, PING, and ECHO, with support for key expiration.
+This project implements a Redis server and client in Rust. It provides a subset of Redis functionality, including basic operations like SET, GET, DEL, PING, and ECHO, with support for key expiration and replication.
 
 ## Table of Contents
 
@@ -21,21 +21,21 @@ This project implements a Redis key-value store server and client in Rust. It pr
 - In-memory key-value store
 - Support for SET, GET, DEL, PING, and ECHO commands
 - Key expiration (TTL) support
-- Clustering and replication
+- Basic replication (master-replica setup)
 - RESP3 protocol implementation
 - Asynchronous server using Tokio
 - CLI client for interacting with the server
+- TUI client for interactive sessions
 - Logging support
 
 ## Project Structure
 
 The project is organized into the following main components:
 
-- `src/server_main.rs`: Entry point for the server application
-- `src/cli_client_main.rs`: Entry point for the CLI client
-- `src/tui_client_main.rs`: Entry point for the TUI client (to be implemented)
+- `src/server/main.rs`: Entry point for the server application
+- `src/cli_client/main.rs`: Entry point for the CLI client
+- `src/tui_client/main.rs`: Entry point for the TUI client
 - `src/server/`: Server-specific modules
-- `src/client/`: Client-specific modules
 - `src/common/`: Shared modules between server and client
 
 Key modules include:
@@ -68,7 +68,11 @@ To start the server, run:
 cargo run --bin redis
 ```
 
-You can customize the host and port using the `--host` and `--port` options. These default to 127.0.0.1 and 6379, respectively.
+You can customize the host and port using the `--host` and `--port` options. To set up a replica, use the `--master` option:
+
+```bash
+cargo run --bin redis -- --host 127.0.0.1 --port 6380 --master 127.0.0.1:6379
+```
 
 ### CLI Client
 
@@ -82,7 +86,7 @@ Available commands:
 
 - `ping`: Ping the server
 - `echo <message>`: Echo a message
-- `set <key> <value> [ttl]`: Set a key-value pair with an optional time to live subcommand
+- `set <key> <value> [EX seconds | PX milliseconds]`: Set a key-value pair with an optional time to live
 - `get <key>`: Get the value of a key
 - `del <key>`: Delete a key
 
@@ -90,13 +94,20 @@ Examples:
 
 ```bash
 cargo run --bin redis_cli -- set mykey myvalue
+cargo run --bin redis_cli -- set mykey myvalue ex 60
 cargo run --bin redis_cli -- get mykey
 cargo run --bin redis_cli -- del mykey
 ```
 
 ### TUI Client
 
-The TUI (Text User Interface) client is not yet implemented. Once implemented, it will provide an interactive terminal-based interface for interacting with the server.
+To start the TUI (Text User Interface) client, run:
+
+```bash
+cargo run --bin redis_tui
+```
+
+This provides an interactive terminal-based interface for interacting with the server. Type commands as you would in the Redis CLI.
 
 ## Architecture
 
@@ -104,7 +115,7 @@ The project follows an asynchronous architecture using Tokio:
 
 1. The server listens for incoming connections.
 2. Each client connection is handled by a separate task.
-3. The `ConnectionManager` coordinates multiple client connections.
+3. The `ConnectionManager` coordinates multiple client connections and manages replication.
 4. The `KVStore` manages the in-memory key-value store and handles expiration.
 5. Communication between components is done using Tokio channels.
 
@@ -127,7 +138,10 @@ The project uses the `log4rs` crate for logging. The logging configuration is de
 
 ## Future Improvements
 
-- Implement the TUI client for a more interactive experience
 - Add support for more Redis commands (e.g., INCR, LPUSH, RPUSH)
 - Implement persistence (AOF or RDB)
 - Implement pub/sub functionality
+- Enhance replication with full dataset synchronization
+- Add clustering support
+- Implement Redis Streams
+- Add authentication and access control
