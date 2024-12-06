@@ -1,4 +1,4 @@
-# Redis Server and Client in Rust
+# Redis Server and Client
 
 This project implements a Redis server and client in Rust. It provides a subset
 of Redis functionality, including basic operations like SET, GET, DEL, PING, and
@@ -30,6 +30,48 @@ ECHO, with support for key expiration and replication.
 - TUI client for interactive sessions
 - Logging support
 
+## Demo Video
+
+- [Demo](https://asciinema.org/a/R7EQhDxdcRu1mgS82D2EOL5hO): 3 Minutes
+
+- **Server Setup**
+
+  - Master server starts on default port 6379
+  - Replica server launches on port 6380, connecting to master
+  - Both servers display successful startup logs
+
+- **TUI Client Interaction**
+
+  - Terminal-based UI connects to master server
+  - Demonstrates basic Redis commands:
+    - `PING` command shows server responsiveness
+    - `SET hello world` demonstrates string storage
+    - `GET hello` retrieves the stored value
+    - `SET goodbye world EX 5` shows TTL functionality
+
+- **CLI Client Operations**
+
+  - Executes commands against both servers:
+    - Direct SET/GET operations on master
+    - Verification of replication on replica server
+    - Shows identical data across both instances
+
+- **Replication Features**
+
+  - Changes on master instantly reflect on replica
+  - Replica maintains read-only status
+  - Demonstrates failover readiness
+
+- **Data Management**
+
+  - Shows key expiration in action
+  - Demonstrates atomic operations
+
+- **Protocol Handling**
+  - RESP3 protocol messages visible in debug mode
+  - Shows proper error handling
+  - Demonstrates protocol's type system in action
+
 ## Project Structure
 
 The project is organized into the following main components:
@@ -57,10 +99,20 @@ don't have them, you can install them from
 Clone the repository and build the project:
 
 ```bash
-git clone https://github.com/dbolivar25/redis.git
+git clone git@github.com:dbolivar25/redis.git
 cd redis
 cargo build --release
 ```
+
+## Documentation
+
+To generate the documentation for the project, run:
+
+```bash
+cargo doc --no-deps --open
+```
+
+This will generate and open the documentation in your default web browser.
 
 ## Usage
 
@@ -69,14 +121,14 @@ cargo build --release
 To start the server, run:
 
 ```bash
-cargo run --bin redis
+cargo run --release --bin redis
 ```
 
 You can customize the host and port using the `--host` and `--port` options. To
 set up a replica, use the `--master` option:
 
 ```bash
-cargo run --bin redis -- --host 127.0.0.1 --port 6380 --master 127.0.0.1:6379
+cargo run --release --bin redis -- --host 127.0.0.1 --port 6380 --master 127.0.0.1:6379
 ```
 
 ### CLI Client
@@ -84,7 +136,7 @@ cargo run --bin redis -- --host 127.0.0.1 --port 6380 --master 127.0.0.1:6379
 To use the CLI client, run:
 
 ```bash
-cargo run --bin redis_cli -- <COMMAND>
+cargo run --release --bin redis_cli -- <COMMAND>
 ```
 
 Available commands:
@@ -99,10 +151,10 @@ Available commands:
 Examples:
 
 ```bash
-cargo run --bin redis_cli -- set mykey myvalue
-cargo run --bin redis_cli -- set mykey myvalue ex 60
-cargo run --bin redis_cli -- get mykey
-cargo run --bin redis_cli -- del mykey
+cargo run --release --bin redis_cli -- set mykey myvalue
+cargo run --release --bin redis_cli -- set mykey myvalue ex 60
+cargo run --release --bin redis_cli -- get mykey
+cargo run --release --bin redis_cli -- del mykey
 ```
 
 ### TUI Client
@@ -110,7 +162,7 @@ cargo run --bin redis_cli -- del mykey
 To start the TUI (Text User Interface) client, run:
 
 ```bash
-cargo run --bin redis_tui
+cargo run --release --bin redis_tui
 ```
 
 This provides a terminal-based interface for interacting with the server. Type
