@@ -1,6 +1,8 @@
 # Redis Server and Client in Rust
 
-This project implements a Redis server and client in Rust. It provides a subset of Redis functionality, including basic operations like SET, GET, DEL, PING, and ECHO, with support for key expiration and replication.
+This project implements a Redis server and client in Rust. It provides a subset
+of Redis functionality, including basic operations like SET, GET, DEL, PING, and
+ECHO, with support for key expiration and replication.
 
 ## Table of Contents
 
@@ -48,7 +50,9 @@ Key modules include:
 
 ## Installation
 
-To build and run the project, you need to have Rust and Cargo installed. If you don't have them, you can install them from [https://rustup.rs/](https://rustup.rs/).
+To build and run the project, you need to have Rust and Cargo installed. If you
+don't have them, you can install them from
+[https://rustup.rs/](https://rustup.rs/).
 
 Clone the repository and build the project:
 
@@ -68,7 +72,8 @@ To start the server, run:
 cargo run --bin redis
 ```
 
-You can customize the host and port using the `--host` and `--port` options. To set up a replica, use the `--master` option:
+You can customize the host and port using the `--host` and `--port` options. To
+set up a replica, use the `--master` option:
 
 ```bash
 cargo run --bin redis -- --host 127.0.0.1 --port 6380 --master 127.0.0.1:6379
@@ -86,7 +91,8 @@ Available commands:
 
 - `ping`: Ping the server
 - `echo <message>`: Echo a message
-- `set <key> <value> [EX seconds | PX milliseconds]`: Set a key-value pair with an optional time to live
+- `set <key> <value> [EX seconds | PX milliseconds]`: Set a key-value pair with
+  an optional time to live
 - `get <key>`: Get the value of a key
 - `del <key>`: Delete a key
 
@@ -107,7 +113,8 @@ To start the TUI (Text User Interface) client, run:
 cargo run --bin redis_tui
 ```
 
-This provides an interactive terminal-based interface for interacting with the server. Type commands as you would in the Redis CLI.
+This provides a terminal-based interface for interacting with the server. Type
+commands as you would in the Redis CLI.
 
 ## Architecture
 
@@ -115,13 +122,15 @@ The project follows an asynchronous architecture using Tokio:
 
 1. The server listens for incoming connections.
 2. Each client connection is handled by a separate task.
-3. The `ConnectionManager` coordinates multiple client connections and manages replication.
+3. The `ConnectionManager` coordinates multiple client connections and manages
+   replication.
 4. The `KVStore` manages the in-memory key-value store and handles expiration.
 5. Communication between components is done using Tokio channels.
 
 ## Protocol
 
-The project implements the RESP3 protocol for communication between the client and server. The protocol supports the following data types:
+The project implements the RESP3 protocol for communication between the client
+and server. The protocol supports the following data types:
 
 - Simple String
 - Simple Error
@@ -134,7 +143,9 @@ The `codec.rs` and `resp3.rs` modules handle encoding and decoding of requests.
 
 ## Logging
 
-The project uses the `log4rs` crate for logging. The logging configuration is defined in `config/log4rs.yml`. Logs are written to both the console and a rolling file appender.
+The project uses the `log4rs` crate for logging. The logging configuration is
+defined in `config/log4rs.yml`. Logs are written to both the console and a
+rolling file appender.
 
 ## Future Improvements
 
