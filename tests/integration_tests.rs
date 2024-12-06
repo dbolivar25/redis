@@ -14,6 +14,7 @@ use tokio::{
 };
 use tokio_util::codec::Framed;
 
+/// Start a new server instance and return a handle to the server and its local address.
 async fn start_server() -> (JoinHandle<()>, SocketAddr) {
     let tcp_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = tcp_listener.local_addr().unwrap();
@@ -27,18 +28,23 @@ async fn start_server() -> (JoinHandle<()>, SocketAddr) {
     (join, addr)
 }
 
+/// Connect to the server at the given address and return a framed connection.
 async fn connect_client(addr: SocketAddr) -> Framed<TcpStream, RESP3Codec> {
     let stream = TcpStream::connect(addr).await.unwrap();
     Framed::new(stream, RESP3Codec)
 }
 
+/// Sends a command to the server and returns the response as a `RESP3Value`.
 async fn send_command(client: &mut Framed<TcpStream, RESP3Codec>, command: Request) -> RESP3Value {
     let encoded = encode_request(&command);
     client.send(encoded).await.unwrap();
+
+    #[allow(clippy::let_and_return)]
     let response = client.next().await.unwrap().unwrap();
     response
 }
 
+/// Test the ping functionality.
 #[tokio::test(start_paused = true)]
 async fn test_ping() {
     let (join_handle, server_addr) = start_server().await;
@@ -50,6 +56,7 @@ async fn test_ping() {
     join_handle.abort();
 }
 
+/// Test the echo functionality.
 #[tokio::test(start_paused = true)]
 async fn test_echo() {
     let (join_handle, server_addr) = start_server().await;
@@ -62,6 +69,7 @@ async fn test_echo() {
     join_handle.abort();
 }
 
+/// Test the set and get functionality.
 #[tokio::test(start_paused = true)]
 async fn test_set_get() {
     let (join_handle, server_addr) = start_server().await;
@@ -79,6 +87,7 @@ async fn test_set_get() {
     join_handle.abort();
 }
 
+/// Test the set functionality with TTL.
 #[tokio::test(start_paused = true)]
 async fn test_set_with_ttl() {
     let (join_handle, server_addr) = start_server().await;
@@ -102,6 +111,7 @@ async fn test_set_with_ttl() {
     join_handle.abort();
 }
 
+/// Test the del functionality.
 #[tokio::test(start_paused = true)]
 async fn test_del() {
     let (join_handle, server_addr) = start_server().await;
@@ -122,6 +132,7 @@ async fn test_del() {
     join_handle.abort();
 }
 
+/// Test the del functionality with multiple keys.
 #[tokio::test(start_paused = true)]
 async fn test_multiple_clients() {
     let (join_handle, server_addr) = start_server().await;
@@ -159,6 +170,7 @@ async fn test_multiple_clients() {
     join_handle.abort();
 }
 
+/// Test that concurrent operations do not break the server.
 #[tokio::test(start_paused = true)]
 async fn test_concurrent_operations() {
     let (join_handle, server_addr) = start_server().await;
@@ -191,6 +203,7 @@ async fn test_concurrent_operations() {
     join_handle.abort();
 }
 
+/// Test that a key with a short TTL can be updated before it expires.
 #[tokio::test(start_paused = true)]
 async fn test_ttl_race_condition() {
     let (join_handle, server_addr) = start_server().await;
@@ -236,6 +249,7 @@ async fn test_ttl_race_condition() {
     join_handle.abort();
 }
 
+/// Test that the server can handle large data. We send the max amount of data (8 KB) in a single command.
 #[tokio::test(start_paused = true)]
 async fn test_large_data() {
     let (join_handle, server_addr) = start_server().await;
@@ -259,6 +273,7 @@ async fn test_large_data() {
     join_handle.abort();
 }
 
+/// Test the shutdown and startup of the server.
 #[tokio::test(start_paused = true)]
 async fn test_server_restart() {
     let (join_handle, server_addr) = start_server().await;
