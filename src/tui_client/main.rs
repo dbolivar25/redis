@@ -9,12 +9,6 @@ use redis::{
     },
     tui_client::cli::Args,
 };
-use std::error::Error;
-use tokio::{net::TcpStream, time::Instant};
-use tokio_util::codec::Framed;
-
-use std::borrow::Cow::{self, Borrowed, Owned};
-
 use rustyline::{
     completion::FilenameCompleter,
     error::ReadlineError,
@@ -22,7 +16,14 @@ use rustyline::{
     hint::HistoryHinter,
     Completer, CompletionType, Config, EditMode, Editor, Helper, Hinter, Validator,
 };
+use std::borrow::Cow::{self, Borrowed, Owned};
+use std::error::Error;
+use tokio::{net::TcpStream, time::Instant};
+use tokio_util::codec::Framed;
 
+/// A helper struct for the TUI client.
+/// It contains a `FilenameCompleter`, a `MatchingBracketHighlighter`,
+/// a `HistoryHinter`, and a colored prompt. Basically, it makes everything pretty.
 #[derive(Helper, Completer, Hinter, Validator)]
 struct RedisTUIHelper {
     #[rustyline(Completer)]
@@ -85,7 +86,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     loop {
         let p = "redis> ";
         rl.helper_mut().expect("No helper").colored_prompt = format!("\x1b[1;32m{p}\x1b[0m");
-        let readline = rl.readline(&p);
+        let readline = rl.readline(p);
 
         match readline {
             Ok(line) => {

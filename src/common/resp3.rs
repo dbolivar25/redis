@@ -1,8 +1,8 @@
-use std::{fmt::Display, str};
-
 use anyhow::{anyhow, bail, Result};
 use itertools::Itertools;
+use std::{fmt::Display, str};
 
+/// Represents a RESP3 value. This is a simplified version of the RESP3 specification from Redis.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum RESP3Value {
     SimpleString(String),
@@ -29,6 +29,7 @@ impl Display for RESP3Value {
     }
 }
 
+/// Encodes a RESP3 value into a RESP3 string.
 pub fn encode_resp3(value: &RESP3Value) -> String {
     match value {
         RESP3Value::SimpleString(s) => format!("+{}\r\n", s),
@@ -48,6 +49,7 @@ pub fn encode_resp3(value: &RESP3Value) -> String {
     }
 }
 
+/// Decodes a RESP3 string into a RESP3 value. Returns the decoded value and the remaining data.
 pub fn decode_resp3(input: &[u8]) -> Result<(RESP3Value, &[u8])> {
     debug_assert!(!input.is_empty());
 
@@ -62,6 +64,8 @@ pub fn decode_resp3(input: &[u8]) -> Result<(RESP3Value, &[u8])> {
     }
 }
 
+/// Decodes a simple string from a byte array after the identifying character has been removed.
+/// Returns the decoded value and the remaining data.
 fn decode_simple_string(input: &[u8]) -> Result<(RESP3Value, &[u8])> {
     let (s, rest) = read_through_crlf(input)?;
 
@@ -70,6 +74,8 @@ fn decode_simple_string(input: &[u8]) -> Result<(RESP3Value, &[u8])> {
     Ok((RESP3Value::SimpleString(s), rest))
 }
 
+/// Decodes a simple error from a byte array after the identifying character has been removed.
+/// Returns the decoded value and the remaining data.
 fn decode_simple_error(input: &[u8]) -> Result<(RESP3Value, &[u8])> {
     let (s, rest) = read_through_crlf(input)?;
 
@@ -78,6 +84,8 @@ fn decode_simple_error(input: &[u8]) -> Result<(RESP3Value, &[u8])> {
     Ok((RESP3Value::SimpleError(s), rest))
 }
 
+/// Decodes an integer from a byte array after the identifying character has been removed.
+/// Returns the decoded value and the remaining data.
 fn decode_integer(input: &[u8]) -> Result<(RESP3Value, &[u8])> {
     let (s, rest) = read_through_crlf(input)?;
     let n = s.parse::<i64>().map_err(|e| anyhow!(e))?;
@@ -85,6 +93,8 @@ fn decode_integer(input: &[u8]) -> Result<(RESP3Value, &[u8])> {
     Ok((RESP3Value::Integer(n), rest))
 }
 
+/// Decodes a bulk string from a byte array after the identifying character has been removed.
+/// Returns the decoded value and the remaining data.
 fn decode_bulk_string(input: &[u8]) -> Result<(RESP3Value, &[u8])> {
     let (len_str, rest) = read_through_crlf(input)?;
     if len_str == "-1" {
@@ -104,6 +114,8 @@ fn decode_bulk_string(input: &[u8]) -> Result<(RESP3Value, &[u8])> {
     Ok((RESP3Value::BulkString(data), &rest[len + 2..]))
 }
 
+/// Decodes an array from a byte array after the identifying character has been removed.
+/// Returns the decoded value and the remaining data.
 fn decode_array(input: &[u8]) -> Result<(RESP3Value, &[u8])> {
     let (len_str, mut rest) = read_through_crlf(input)?;
     if len_str == "-1" {
@@ -125,6 +137,8 @@ fn decode_array(input: &[u8]) -> Result<(RESP3Value, &[u8])> {
     Ok((RESP3Value::Array(values), rest))
 }
 
+/// Decodes a null value from a byte array after the identifying character has been removed.
+/// Returns the decoded value and the remaining data.
 fn decode_null(input: &[u8]) -> Result<(RESP3Value, &[u8])> {
     match &input[..2] {
         b"\r\n" => Ok((RESP3Value::Null, &input[2..])),
@@ -132,6 +146,8 @@ fn decode_null(input: &[u8]) -> Result<(RESP3Value, &[u8])> {
     }
 }
 
+/// Reads a string from a byte array until a CRLF sequence is found. Returns the string and the
+/// remaining data.
 fn read_through_crlf(input: &[u8]) -> Result<(String, &[u8])> {
     if let Some((pos, _)) = input.iter().find_position(|&&b| b == b'\r') {
         if let Some(&b'\n') = input.get(pos + 1) {

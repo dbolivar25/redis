@@ -13,6 +13,10 @@ use tokio::{
 };
 use tokio_util::codec::Framed;
 
+/// Represents a connection to a client, master, or replica.
+/// The connection is bidirectional, with the server sending responses to the client
+/// and the client sending requests to the server. This struct is implemented as an actor which has
+/// a cooresponding handle struct that can be used to send messages to the actor.
 pub struct Connection {
     receiver: mpsc::Receiver<ConnectionMessage>,
     stream: Framed<TcpStream, RESP3Codec>,
@@ -22,6 +26,7 @@ pub struct Connection {
     conn_manager: ConnectionManagerHandle,
 }
 
+/// Represents the type of connection.
 #[derive(Debug)]
 pub enum ConnectionType {
     Master,
@@ -29,6 +34,7 @@ pub enum ConnectionType {
     Client,
 }
 
+/// Represents the messages that can be sent to a connection actor.
 #[derive(Debug)]
 pub enum ConnectionMessage {
     ForwardRequest { request: Request },
@@ -37,6 +43,7 @@ pub enum ConnectionMessage {
 }
 
 impl Connection {
+    /// Creates a new connection actor.
     pub fn new(
         receiver: mpsc::Receiver<ConnectionMessage>,
         stream: Framed<TcpStream, RESP3Codec>,
@@ -56,6 +63,7 @@ impl Connection {
         }
     }
 
+    /// Handles a message sent to the connection actor.
     async fn handle_message(&mut self, msg: ConnectionMessage) {
         match msg {
             ConnectionMessage::ForwardRequest { request } => {
@@ -126,6 +134,7 @@ impl Connection {
     }
 }
 
+/// Runs the connection actor.
 async fn run_connection(mut connection: Connection, on_shutdown_complete: oneshot::Sender<()>) {
     log::info!("Connection established for {}", connection.addr);
 
@@ -242,6 +251,8 @@ async fn run_connection(mut connection: Connection, on_shutdown_complete: onesho
     on_shutdown_complete.send(()).ok();
 }
 
+/// Represents a handle to a connection actor. The handle can be used to send messages to the actor.
+/// The handle is clonable and can be shared across threads.
 #[derive(Debug, Clone)]
 pub struct ConnectionHandle {
     pub addr: SocketAddr,
@@ -249,6 +260,9 @@ pub struct ConnectionHandle {
 }
 
 impl ConnectionHandle {
+    /// Creates a new connection handle and starts the connection actor.
+    /// Returns a tuple containing the handle and a oneshot receiver that will be signalled when the
+    /// connection actor has shutdown.
     pub fn new(
         stream: Framed<TcpStream, RESP3Codec>,
         addr: SocketAddr,
@@ -263,18 +277,23 @@ impl ConnectionHandle {
         (ConnectionHandle { addr, sender }, shutdown_complete)
     }
 
+    /// Forwards a request to the connection actor. This is used to send requests from the master to
+    /// the replica.
     pub async fn forward_request(&self, request: Request) -> Result<()> {
         let msg = ConnectionMessage::ForwardRequest { request };
         self.sender.send(msg).await?;
         Ok(())
     }
 
+    /// Sets the connection type of the connection actor. This is used to set the connection type of
+    /// the connection actor to master or replica.
     pub async fn set_conn_type(&self, conn_type: ConnectionType) -> Result<()> {
         let msg = ConnectionMessage::SetConnType { conn_type };
         self.sender.send(msg).await?;
         Ok(())
     }
 
+    /// Shuts down the connection actor.
     pub async fn shutdown(&self) -> Result<()> {
         let msg = ConnectionMessage::Shutdown;
         self.sender.send(msg).await?;

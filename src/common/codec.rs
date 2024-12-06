@@ -1,10 +1,10 @@
+use super::resp3::{decode_resp3, encode_resp3, RESP3Value};
 use anyhow::{bail, Result};
 use bytes::{Buf, BytesMut};
 use std::{fmt::Display, io};
 use tokio_util::codec::{Decoder, Encoder};
 
-use super::resp3::{decode_resp3, encode_resp3, RESP3Value};
-
+/// Represents a request that can be sent to the server.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Request {
     // Hello,
@@ -16,6 +16,7 @@ pub enum Request {
     PSync(RESP3Value, RESP3Value),
 }
 
+/// Represents a time-to-live value for a key in the KV store.
 #[derive(Debug, Clone, PartialEq)]
 pub enum TTL {
     Milliseconds(u64),
@@ -40,11 +41,13 @@ impl Display for Request {
     }
 }
 
+/// A unit struct that represents the codec for the RESP3 protocol.
 pub struct RESP3Codec;
 
 impl Encoder<RESP3Value> for RESP3Codec {
     type Error = io::Error;
 
+    /// Encodes a RESP3 value into a byte buffer.
     fn encode(&mut self, item: RESP3Value, dst: &mut BytesMut) -> Result<(), Self::Error> {
         let encoded = encode_resp3(&item);
         dst.extend_from_slice(encoded.as_bytes());
@@ -56,6 +59,7 @@ impl Decoder for RESP3Codec {
     type Item = RESP3Value;
     type Error = io::Error;
 
+    /// Decodes a RESP3 value from a byte buffer.
     fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
         if src.is_empty() {
             return Ok(None);
@@ -72,6 +76,7 @@ impl Decoder for RESP3Codec {
     }
 }
 
+/// Encodes a request into a RESP3 value. This function is the inverse of `decode_request`.
 pub fn encode_request(request: &Request) -> RESP3Value {
     match request {
         Request::Ping => RESP3Value::Array(vec![RESP3Value::BulkString(b"PING".to_vec())]),
@@ -114,6 +119,7 @@ pub fn encode_request(request: &Request) -> RESP3Value {
     }
 }
 
+/// Decodes a RESP3 value into a request. This function is the inverse of `encode_request`.
 pub fn decode_request(data: RESP3Value) -> Result<Request> {
     if let RESP3Value::Array(data) = data {
         if data.is_empty() {
@@ -139,6 +145,7 @@ pub fn decode_request(data: RESP3Value) -> Result<Request> {
     }
 }
 
+/// Decodes a ping Request from an array of RESP3 values.
 fn decode_ping_request(data: &[RESP3Value]) -> Result<Request> {
     if data.len() != 1 {
         bail!("Invalid PING request");
@@ -147,6 +154,7 @@ fn decode_ping_request(data: &[RESP3Value]) -> Result<Request> {
     Ok(Request::Ping)
 }
 
+/// Decodes an echo Request from an array of RESP3 values.
 fn decode_echo_request(data: &[RESP3Value]) -> Result<Request> {
     if data.len() != 2 {
         bail!("Invalid ECHO request");
@@ -155,6 +163,7 @@ fn decode_echo_request(data: &[RESP3Value]) -> Result<Request> {
     Ok(Request::Echo(data[1].clone()))
 }
 
+/// Decodes a set Request from an array of RESP3 values.
 fn decode_set_request(data: &[RESP3Value]) -> Result<Request> {
     if data.len() < 3 {
         bail!("Invalid SET request");
@@ -174,6 +183,7 @@ fn decode_set_request(data: &[RESP3Value]) -> Result<Request> {
     Ok(Request::Set(key, value, ttl))
 }
 
+/// Decodes a TTL value from an array of RESP3 values.
 fn decode_ttl(ttl_type: &RESP3Value, ttl_value: &RESP3Value) -> Result<Option<TTL>> {
     let ttl_type_str = match ttl_type {
         RESP3Value::BulkString(s) => s,
@@ -192,6 +202,7 @@ fn decode_ttl(ttl_type: &RESP3Value, ttl_value: &RESP3Value) -> Result<Option<TT
     }
 }
 
+/// Decodes a get Request from an array of RESP3 values.
 fn decode_get_request(data: &[RESP3Value]) -> Result<Request> {
     if data.len() != 2 {
         bail!("Invalid GET request");
@@ -200,6 +211,7 @@ fn decode_get_request(data: &[RESP3Value]) -> Result<Request> {
     Ok(Request::Get(data[1].clone()))
 }
 
+/// Decodes a del Request from an array of RESP3 values.
 fn decode_del_request(data: &[RESP3Value]) -> Result<Request> {
     if data.len() != 2 {
         bail!("Invalid DEL request");
@@ -208,6 +220,7 @@ fn decode_del_request(data: &[RESP3Value]) -> Result<Request> {
     Ok(Request::Del(data[1].clone()))
 }
 
+/// Decodes a PSYNC Request from an array of RESP3 values.
 fn decode_psync_request(data: &[RESP3Value]) -> Result<Request> {
     if data.len() != 3 {
         bail!("Invalid PSYNC request");

@@ -4,6 +4,9 @@ use std::collections::HashMap;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::{interval_at, Duration, Instant, Interval};
 
+/// A key-value store that supports setting, getting, and deleting key-value pairs.
+/// Each key-value pair can have an optional expiration time.
+/// The key-value store periodically removes expired key-value pairs.
 pub struct KVStore {
     receiver: mpsc::Receiver<KVStoreMessage>,
     active_expiration_interval: Interval,
@@ -13,6 +16,7 @@ pub struct KVStore {
 type Key = RESP3Value;
 type Value = (RESP3Value, Option<Instant>);
 
+/// Messages that can be sent to the KVStore.
 #[derive(Debug)]
 pub enum KVStoreMessage {
     Set {
@@ -30,6 +34,7 @@ pub enum KVStoreMessage {
 }
 
 impl KVStore {
+    /// Create a new KVStore. The KVStore will be initialized with the given key-value pairs.
     pub fn new(
         receiver: mpsc::Receiver<KVStoreMessage>,
         active_expiration_interval: Interval,
@@ -42,6 +47,7 @@ impl KVStore {
         }
     }
 
+    /// Handle a message sent to the KVStore.
     fn handle_message(&mut self, msg: KVStoreMessage) {
         match msg {
             KVStoreMessage::Set { key, value } => {
@@ -70,12 +76,17 @@ impl KVStore {
         }
     }
 
+    /// Remove all expired key-value pairs.
     fn remove_expired(&mut self, instant: Instant) {
         self.kv_store
             .retain(|_, (_, expiry)| expiry.map_or(true, |expiry| expiry > instant));
     }
 }
 
+/// Run the KVStore until it is shut down. The KVStore will handle messages and remove expired key-value pairs.
+/// When the KVStore is shut down, a message will be sent to the `on_shutdown_complete` sender.
+/// The KVStore will not accept any more messages after it is shut down but will finish all of the
+/// in-flight requests.
 async fn run_kv_store(mut kv_store: KVStore, on_shutdown_complete: oneshot::Sender<()>) {
     log::info!("KV store started");
 
@@ -97,12 +108,14 @@ async fn run_kv_store(mut kv_store: KVStore, on_shutdown_complete: oneshot::Send
     on_shutdown_complete.send(()).ok();
 }
 
+/// A handle to the KVStore that can be used to set, get, and delete key-value pairs.
 #[derive(Clone)]
 pub struct KVStoreHandle {
     sender: mpsc::Sender<KVStoreMessage>,
 }
 
 impl KVStoreHandle {
+    /// Create a new KVStoreHandle and a oneshot receiver that will be signalled when the KVStore is shut down.
     pub fn new() -> (Self, oneshot::Receiver<()>) {
         let (sender, receiver) = mpsc::channel(32);
         let (on_shutdown_complete, shutdown_complete) = oneshot::channel();
@@ -118,6 +131,7 @@ impl KVStoreHandle {
         (KVStoreHandle { sender }, shutdown_complete)
     }
 
+    /// Set a key-value pair in the KVStore. The key-value pair can have an optional expiration time.
     pub async fn set(
         &self,
         key: RESP3Value,
@@ -130,6 +144,7 @@ impl KVStoreHandle {
         Ok(())
     }
 
+    /// Get the value for a key in the KVStore.
     pub async fn get(&self, key: Key) -> Result<Option<RESP3Value>> {
         let (respond_to, response) = oneshot::channel();
         let msg = KVStoreMessage::Get { key, respond_to };
@@ -137,12 +152,14 @@ impl KVStoreHandle {
         response.await.map_err(Into::into)
     }
 
+    /// Delete a key from the KVStore.
     pub async fn del(&self, key: Key) -> Result<()> {
         let msg = KVStoreMessage::Del { key };
         self.sender.send(msg).await?;
         Ok(())
     }
 
+    /// Shut down the KVStore.
     pub async fn shutdown(&self) -> Result<()> {
         let msg = KVStoreMessage::Shutdown;
         self.sender.send(msg).await?;
@@ -150,7 +167,7 @@ impl KVStoreHandle {
     }
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn test_set_and_get() {
     let (kv_store, _) = KVStoreHandle::new();
 
@@ -168,7 +185,7 @@ async fn test_set_and_get() {
     kv_store.shutdown().await.unwrap();
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn test_set_with_ttl_and_get() {
     let (kv_store, _) = KVStoreHandle::new();
 
@@ -195,7 +212,7 @@ async fn test_set_with_ttl_and_get() {
     kv_store.shutdown().await.unwrap();
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn test_del() {
     let (kv_store, _) = KVStoreHandle::new();
 
@@ -211,7 +228,7 @@ async fn test_del() {
     kv_store.shutdown().await.unwrap();
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn test_multiple_sets() {
     let (kv_store, _) = KVStoreHandle::new();
 
@@ -238,7 +255,7 @@ async fn test_multiple_sets() {
     kv_store.shutdown().await.unwrap();
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn test_overwrite_value() {
     let (kv_store, _) = KVStoreHandle::new();
 
@@ -258,7 +275,7 @@ async fn test_overwrite_value() {
     kv_store.shutdown().await.unwrap();
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn test_get_non_existent_key() {
     let (kv_store, _) = KVStoreHandle::new();
 
@@ -270,7 +287,7 @@ async fn test_get_non_existent_key() {
     kv_store.shutdown().await.unwrap();
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn test_del_non_existent_key() {
     let (kv_store, _) = KVStoreHandle::new();
 
@@ -282,7 +299,7 @@ async fn test_del_non_existent_key() {
     kv_store.shutdown().await.unwrap();
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn test_ttl_milliseconds() {
     let (kv_store, _) = KVStoreHandle::new();
 
@@ -309,7 +326,7 @@ async fn test_ttl_milliseconds() {
     kv_store.shutdown().await.unwrap();
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn test_shutdown() {
     let (kv_store, shutdown_complete) = KVStoreHandle::new();
 
