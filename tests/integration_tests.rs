@@ -713,3 +713,342 @@ async fn test_partial_sync_multiple_commands() {
 
     master_handle.abort();
 }
+
+#[tokio::test(start_paused = true)]
+async fn test_incr_decr() {
+    let (join_handle, server_addr) = start_server().await;
+    let mut client = connect_client(server_addr).await;
+
+    let key = RESP3Value::BulkString(b"counter".to_vec());
+
+    let response = send_command(&mut client, Request::Incr(key.clone())).await;
+    assert_eq!(response, RESP3Value::Integer(1));
+
+    let response = send_command(&mut client, Request::Incr(key.clone())).await;
+    assert_eq!(response, RESP3Value::Integer(2));
+
+    let response = send_command(&mut client, Request::Decr(key.clone())).await;
+    assert_eq!(response, RESP3Value::Integer(1));
+
+    let response = send_command(&mut client, Request::IncrBy(key.clone(), 10)).await;
+    assert_eq!(response, RESP3Value::Integer(11));
+
+    let response = send_command(&mut client, Request::DecrBy(key.clone(), 5)).await;
+    assert_eq!(response, RESP3Value::Integer(6));
+
+    join_handle.abort();
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_incr_on_non_integer() {
+    let (join_handle, server_addr) = start_server().await;
+    let mut client = connect_client(server_addr).await;
+
+    let key = RESP3Value::BulkString(b"string_key".to_vec());
+    let value = RESP3Value::BulkString(b"not_a_number".to_vec());
+
+    send_command(&mut client, Request::Set(key.clone(), value, None)).await;
+
+    let response = send_command(&mut client, Request::Incr(key)).await;
+    assert!(matches!(response, RESP3Value::SimpleError(_)));
+
+    join_handle.abort();
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_append_strlen() {
+    let (join_handle, server_addr) = start_server().await;
+    let mut client = connect_client(server_addr).await;
+
+    let key = RESP3Value::BulkString(b"appendkey".to_vec());
+    let value1 = RESP3Value::BulkString(b"Hello".to_vec());
+    let value2 = RESP3Value::BulkString(b" World".to_vec());
+
+    let response = send_command(&mut client, Request::Append(key.clone(), value1)).await;
+    assert_eq!(response, RESP3Value::Integer(5));
+
+    let response = send_command(&mut client, Request::Append(key.clone(), value2)).await;
+    assert_eq!(response, RESP3Value::Integer(11));
+
+    let response = send_command(&mut client, Request::StrLen(key.clone())).await;
+    assert_eq!(response, RESP3Value::Integer(11));
+
+    let response = send_command(&mut client, Request::Get(key)).await;
+    assert_eq!(response, RESP3Value::BulkString(b"Hello World".to_vec()));
+
+    join_handle.abort();
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_exists() {
+    let (join_handle, server_addr) = start_server().await;
+    let mut client = connect_client(server_addr).await;
+
+    let key1 = RESP3Value::BulkString(b"exist1".to_vec());
+    let key2 = RESP3Value::BulkString(b"exist2".to_vec());
+    let key3 = RESP3Value::BulkString(b"noexist".to_vec());
+    let value = RESP3Value::BulkString(b"value".to_vec());
+
+    send_command(&mut client, Request::Set(key1.clone(), value.clone(), None)).await;
+    send_command(&mut client, Request::Set(key2.clone(), value, None)).await;
+
+    let response = send_command(&mut client, Request::Exists(vec![key1.clone()])).await;
+    assert_eq!(response, RESP3Value::Integer(1));
+
+    let response = send_command(&mut client, Request::Exists(vec![key1, key2, key3])).await;
+    assert_eq!(response, RESP3Value::Integer(2));
+
+    join_handle.abort();
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_keys_pattern() {
+    let (join_handle, server_addr) = start_server().await;
+    let mut client = connect_client(server_addr).await;
+
+    let value = RESP3Value::BulkString(b"value".to_vec());
+    send_command(&mut client, Request::Set(RESP3Value::BulkString(b"user:1".to_vec()), value.clone(), None)).await;
+    send_command(&mut client, Request::Set(RESP3Value::BulkString(b"user:2".to_vec()), value.clone(), None)).await;
+    send_command(&mut client, Request::Set(RESP3Value::BulkString(b"session:1".to_vec()), value, None)).await;
+
+    let response = send_command(&mut client, Request::Keys(RESP3Value::BulkString(b"user:*".to_vec()))).await;
+    if let RESP3Value::Array(keys) = response {
+        assert_eq!(keys.len(), 2);
+    } else {
+        panic!("Expected array");
+    }
+
+    let response = send_command(&mut client, Request::Keys(RESP3Value::BulkString(b"*".to_vec()))).await;
+    if let RESP3Value::Array(keys) = response {
+        assert_eq!(keys.len(), 3);
+    } else {
+        panic!("Expected array");
+    }
+
+    join_handle.abort();
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_rename() {
+    let (join_handle, server_addr) = start_server().await;
+    let mut client = connect_client(server_addr).await;
+
+    let key1 = RESP3Value::BulkString(b"oldkey".to_vec());
+    let key2 = RESP3Value::BulkString(b"newkey".to_vec());
+    let value = RESP3Value::BulkString(b"myvalue".to_vec());
+
+    send_command(&mut client, Request::Set(key1.clone(), value.clone(), None)).await;
+
+    let response = send_command(&mut client, Request::Rename(key1.clone(), key2.clone())).await;
+    assert_eq!(response, RESP3Value::SimpleString("OK".to_string()));
+
+    let response = send_command(&mut client, Request::Get(key1)).await;
+    assert_eq!(response, RESP3Value::Null);
+
+    let response = send_command(&mut client, Request::Get(key2)).await;
+    assert_eq!(response, value);
+
+    join_handle.abort();
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_type_command() {
+    let (join_handle, server_addr) = start_server().await;
+    let mut client = connect_client(server_addr).await;
+
+    let key = RESP3Value::BulkString(b"typekey".to_vec());
+    let value = RESP3Value::BulkString(b"value".to_vec());
+
+    let response = send_command(&mut client, Request::Type(key.clone())).await;
+    assert_eq!(response, RESP3Value::SimpleString("none".to_string()));
+
+    send_command(&mut client, Request::Set(key.clone(), value, None)).await;
+
+    let response = send_command(&mut client, Request::Type(key)).await;
+    assert_eq!(response, RESP3Value::SimpleString("string".to_string()));
+
+    join_handle.abort();
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_expire_ttl_persist() {
+    let (join_handle, server_addr) = start_server().await;
+    let mut client = connect_client(server_addr).await;
+
+    let key = RESP3Value::BulkString(b"expirekey".to_vec());
+    let value = RESP3Value::BulkString(b"value".to_vec());
+
+    let response = send_command(&mut client, Request::Ttl(key.clone())).await;
+    assert_eq!(response, RESP3Value::Integer(-2));
+
+    send_command(&mut client, Request::Set(key.clone(), value, None)).await;
+
+    let response = send_command(&mut client, Request::Ttl(key.clone())).await;
+    assert_eq!(response, RESP3Value::Integer(-1));
+
+    let response = send_command(&mut client, Request::Expire(key.clone(), 100)).await;
+    assert_eq!(response, RESP3Value::Integer(1));
+
+    let response = send_command(&mut client, Request::Ttl(key.clone())).await;
+    if let RESP3Value::Integer(ttl) = response {
+        assert!(ttl > 0 && ttl <= 100);
+    } else {
+        panic!("Expected integer");
+    }
+
+    let response = send_command(&mut client, Request::Persist(key.clone())).await;
+    assert_eq!(response, RESP3Value::Integer(1));
+
+    let response = send_command(&mut client, Request::Ttl(key)).await;
+    assert_eq!(response, RESP3Value::Integer(-1));
+
+    join_handle.abort();
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_pttl() {
+    let (join_handle, server_addr) = start_server().await;
+    let mut client = connect_client(server_addr).await;
+
+    let key = RESP3Value::BulkString(b"pttlkey".to_vec());
+    let value = RESP3Value::BulkString(b"value".to_vec());
+
+    send_command(&mut client, Request::Set(key.clone(), value, None)).await;
+    send_command(&mut client, Request::PExpire(key.clone(), 5000)).await;
+
+    let response = send_command(&mut client, Request::PTtl(key)).await;
+    if let RESP3Value::Integer(pttl) = response {
+        assert!(pttl > 0 && pttl <= 5000);
+    } else {
+        panic!("Expected integer");
+    }
+
+    join_handle.abort();
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_mget_mset() {
+    let (join_handle, server_addr) = start_server().await;
+    let mut client = connect_client(server_addr).await;
+
+    let pairs = vec![
+        (RESP3Value::BulkString(b"mkey1".to_vec()), RESP3Value::BulkString(b"mval1".to_vec())),
+        (RESP3Value::BulkString(b"mkey2".to_vec()), RESP3Value::BulkString(b"mval2".to_vec())),
+        (RESP3Value::BulkString(b"mkey3".to_vec()), RESP3Value::BulkString(b"mval3".to_vec())),
+    ];
+
+    let response = send_command(&mut client, Request::MSet(pairs)).await;
+    assert_eq!(response, RESP3Value::SimpleString("OK".to_string()));
+
+    let keys = vec![
+        RESP3Value::BulkString(b"mkey1".to_vec()),
+        RESP3Value::BulkString(b"mkey2".to_vec()),
+        RESP3Value::BulkString(b"nonexistent".to_vec()),
+        RESP3Value::BulkString(b"mkey3".to_vec()),
+    ];
+
+    let response = send_command(&mut client, Request::MGet(keys)).await;
+    if let RESP3Value::Array(values) = response {
+        assert_eq!(values.len(), 4);
+        assert_eq!(values[0], RESP3Value::BulkString(b"mval1".to_vec()));
+        assert_eq!(values[1], RESP3Value::BulkString(b"mval2".to_vec()));
+        assert_eq!(values[2], RESP3Value::Null);
+        assert_eq!(values[3], RESP3Value::BulkString(b"mval3".to_vec()));
+    } else {
+        panic!("Expected array");
+    }
+
+    join_handle.abort();
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_dbsize() {
+    let (join_handle, server_addr) = start_server().await;
+    let mut client = connect_client(server_addr).await;
+
+    let response = send_command(&mut client, Request::DbSize).await;
+    assert_eq!(response, RESP3Value::Integer(0));
+
+    let value = RESP3Value::BulkString(b"value".to_vec());
+    send_command(&mut client, Request::Set(RESP3Value::BulkString(b"key1".to_vec()), value.clone(), None)).await;
+    send_command(&mut client, Request::Set(RESP3Value::BulkString(b"key2".to_vec()), value.clone(), None)).await;
+    send_command(&mut client, Request::Set(RESP3Value::BulkString(b"key3".to_vec()), value, None)).await;
+
+    let response = send_command(&mut client, Request::DbSize).await;
+    assert_eq!(response, RESP3Value::Integer(3));
+
+    join_handle.abort();
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_flushdb() {
+    let (join_handle, server_addr) = start_server().await;
+    let mut client = connect_client(server_addr).await;
+
+    let value = RESP3Value::BulkString(b"value".to_vec());
+    send_command(&mut client, Request::Set(RESP3Value::BulkString(b"key1".to_vec()), value.clone(), None)).await;
+    send_command(&mut client, Request::Set(RESP3Value::BulkString(b"key2".to_vec()), value, None)).await;
+
+    let response = send_command(&mut client, Request::DbSize).await;
+    assert_eq!(response, RESP3Value::Integer(2));
+
+    let response = send_command(&mut client, Request::FlushDb).await;
+    assert_eq!(response, RESP3Value::SimpleString("OK".to_string()));
+
+    let response = send_command(&mut client, Request::DbSize).await;
+    assert_eq!(response, RESP3Value::Integer(0));
+
+    join_handle.abort();
+}
+
+#[tokio::test]
+async fn test_incr_replication() {
+    let (master_handle, master_addr) = start_server().await;
+    let mut master_client = connect_client(master_addr).await;
+
+    let (replica_handle, replica_addr) = start_replica(master_addr).await;
+    let mut replica_client = connect_client(replica_addr).await;
+
+    let key = RESP3Value::BulkString(b"replicated_counter".to_vec());
+
+    let response = send_command(&mut master_client, Request::Incr(key.clone())).await;
+    assert_eq!(response, RESP3Value::Integer(1));
+
+    let response = send_command(&mut master_client, Request::IncrBy(key.clone(), 10)).await;
+    assert_eq!(response, RESP3Value::Integer(11));
+
+    tokio::time::sleep(Duration::from_millis(20)).await;
+
+    let response = send_command(&mut replica_client, Request::Get(key)).await;
+    assert_eq!(response, RESP3Value::BulkString(b"11".to_vec()));
+
+    master_handle.abort();
+    replica_handle.abort();
+}
+
+#[tokio::test]
+async fn test_mset_replication() {
+    let (master_handle, master_addr) = start_server().await;
+    let mut master_client = connect_client(master_addr).await;
+
+    let (replica_handle, replica_addr) = start_replica(master_addr).await;
+    let mut replica_client = connect_client(replica_addr).await;
+
+    let pairs = vec![
+        (RESP3Value::BulkString(b"rkey1".to_vec()), RESP3Value::BulkString(b"rval1".to_vec())),
+        (RESP3Value::BulkString(b"rkey2".to_vec()), RESP3Value::BulkString(b"rval2".to_vec())),
+    ];
+
+    send_command(&mut master_client, Request::MSet(pairs)).await;
+
+    tokio::time::sleep(Duration::from_millis(20)).await;
+
+    let response = send_command(&mut replica_client, Request::Get(RESP3Value::BulkString(b"rkey1".to_vec()))).await;
+    assert_eq!(response, RESP3Value::BulkString(b"rval1".to_vec()));
+
+    let response = send_command(&mut replica_client, Request::Get(RESP3Value::BulkString(b"rkey2".to_vec()))).await;
+    assert_eq!(response, RESP3Value::BulkString(b"rval2".to_vec()));
+
+    master_handle.abort();
+    replica_handle.abort();
+}

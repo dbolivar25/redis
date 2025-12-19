@@ -370,6 +370,360 @@ async fn run_connection(mut connection: Connection, on_shutdown_complete: onesho
 
                         continue;
                     }
+                    Request::Incr(key) => {
+                        let broadcast_future = connection
+                            .conn_manager
+                            .broadcast(Request::Incr(key.clone()));
+                        let incr_future = connection.kv_store.incr_by(key, 1);
+
+                        let (_broadcast_res, incr_res) = tokio::join!(broadcast_future, incr_future);
+
+                        if is_from_master {
+                            connection.replica_offset += 1;
+                        }
+
+                        match incr_res {
+                            Ok(Ok(value)) => RESP3Value::Integer(value),
+                            Ok(Err(e)) => RESP3Value::SimpleError(format!("ERR {e}")),
+                            Err(err) => {
+                                log::error!("Failed to incr key: {:?}", err);
+                                continue;
+                            }
+                        }
+                    }
+                    Request::Decr(key) => {
+                        let broadcast_future = connection
+                            .conn_manager
+                            .broadcast(Request::Decr(key.clone()));
+                        let decr_future = connection.kv_store.incr_by(key, -1);
+
+                        let (_broadcast_res, decr_res) = tokio::join!(broadcast_future, decr_future);
+
+                        if is_from_master {
+                            connection.replica_offset += 1;
+                        }
+
+                        match decr_res {
+                            Ok(Ok(value)) => RESP3Value::Integer(value),
+                            Ok(Err(e)) => RESP3Value::SimpleError(format!("ERR {e}")),
+                            Err(err) => {
+                                log::error!("Failed to decr key: {:?}", err);
+                                continue;
+                            }
+                        }
+                    }
+                    Request::IncrBy(key, delta) => {
+                        let broadcast_future = connection
+                            .conn_manager
+                            .broadcast(Request::IncrBy(key.clone(), delta));
+                        let incr_future = connection.kv_store.incr_by(key, delta);
+
+                        let (_broadcast_res, incr_res) = tokio::join!(broadcast_future, incr_future);
+
+                        if is_from_master {
+                            connection.replica_offset += 1;
+                        }
+
+                        match incr_res {
+                            Ok(Ok(value)) => RESP3Value::Integer(value),
+                            Ok(Err(e)) => RESP3Value::SimpleError(format!("ERR {e}")),
+                            Err(err) => {
+                                log::error!("Failed to incrby key: {:?}", err);
+                                continue;
+                            }
+                        }
+                    }
+                    Request::DecrBy(key, delta) => {
+                        let broadcast_future = connection
+                            .conn_manager
+                            .broadcast(Request::DecrBy(key.clone(), delta));
+                        let decr_future = connection.kv_store.incr_by(key, -delta);
+
+                        let (_broadcast_res, decr_res) = tokio::join!(broadcast_future, decr_future);
+
+                        if is_from_master {
+                            connection.replica_offset += 1;
+                        }
+
+                        match decr_res {
+                            Ok(Ok(value)) => RESP3Value::Integer(value),
+                            Ok(Err(e)) => RESP3Value::SimpleError(format!("ERR {e}")),
+                            Err(err) => {
+                                log::error!("Failed to decrby key: {:?}", err);
+                                continue;
+                            }
+                        }
+                    }
+                    Request::Append(key, value) => {
+                        let append_value = match &value {
+                            RESP3Value::BulkString(b) => b.clone(),
+                            RESP3Value::SimpleString(s) => s.as_bytes().to_vec(),
+                            _ => vec![],
+                        };
+
+                        let broadcast_future = connection
+                            .conn_manager
+                            .broadcast(Request::Append(key.clone(), value));
+                        let append_future = connection.kv_store.append(key, append_value);
+
+                        let (_broadcast_res, append_res) = tokio::join!(broadcast_future, append_future);
+
+                        if is_from_master {
+                            connection.replica_offset += 1;
+                        }
+
+                        match append_res {
+                            Ok(len) => RESP3Value::Integer(len as i64),
+                            Err(err) => {
+                                log::error!("Failed to append: {:?}", err);
+                                continue;
+                            }
+                        }
+                    }
+                    Request::StrLen(key) => {
+                        match connection.kv_store.strlen(key).await {
+                            Ok(len) => RESP3Value::Integer(len as i64),
+                            Err(err) => {
+                                log::error!("Failed to strlen: {:?}", err);
+                                continue;
+                            }
+                        }
+                    }
+                    Request::Exists(keys) => {
+                        match connection.kv_store.exists(keys).await {
+                            Ok(count) => RESP3Value::Integer(count as i64),
+                            Err(err) => {
+                                log::error!("Failed to exists: {:?}", err);
+                                continue;
+                            }
+                        }
+                    }
+                    Request::Keys(pattern) => {
+                        let pattern_str = match &pattern {
+                            RESP3Value::BulkString(b) => String::from_utf8_lossy(b).to_string(),
+                            RESP3Value::SimpleString(s) => s.clone(),
+                            _ => "*".to_string(),
+                        };
+
+                        match connection.kv_store.keys(pattern_str).await {
+                            Ok(keys) => RESP3Value::Array(keys),
+                            Err(err) => {
+                                log::error!("Failed to keys: {:?}", err);
+                                continue;
+                            }
+                        }
+                    }
+                    Request::Rename(key, new_key) => {
+                        let broadcast_future = connection
+                            .conn_manager
+                            .broadcast(Request::Rename(key.clone(), new_key.clone()));
+                        let rename_future = connection.kv_store.rename(key, new_key);
+
+                        let (_broadcast_res, rename_res) = tokio::join!(broadcast_future, rename_future);
+
+                        if is_from_master {
+                            connection.replica_offset += 1;
+                        }
+
+                        match rename_res {
+                            Ok(Ok(())) => RESP3Value::SimpleString("OK".to_string()),
+                            Ok(Err(e)) => RESP3Value::SimpleError(format!("ERR {e}")),
+                            Err(err) => {
+                                log::error!("Failed to rename: {:?}", err);
+                                continue;
+                            }
+                        }
+                    }
+                    Request::Type(key) => {
+                        match connection.kv_store.get_type(key).await {
+                            Ok(type_str) => RESP3Value::SimpleString(type_str),
+                            Err(err) => {
+                                log::error!("Failed to type: {:?}", err);
+                                continue;
+                            }
+                        }
+                    }
+                    Request::Expire(key, secs) => {
+                        let expire_at = Instant::now() + Duration::from_secs(secs);
+
+                        let broadcast_future = connection
+                            .conn_manager
+                            .broadcast(Request::Expire(key.clone(), secs));
+                        let expire_future = connection.kv_store.set_expire(key, expire_at);
+
+                        let (_broadcast_res, expire_res) = tokio::join!(broadcast_future, expire_future);
+
+                        if is_from_master {
+                            connection.replica_offset += 1;
+                        }
+
+                        match expire_res {
+                            Ok(true) => RESP3Value::Integer(1),
+                            Ok(false) => RESP3Value::Integer(0),
+                            Err(err) => {
+                                log::error!("Failed to expire: {:?}", err);
+                                continue;
+                            }
+                        }
+                    }
+                    Request::PExpire(key, ms) => {
+                        let expire_at = Instant::now() + Duration::from_millis(ms);
+
+                        let broadcast_future = connection
+                            .conn_manager
+                            .broadcast(Request::PExpire(key.clone(), ms));
+                        let expire_future = connection.kv_store.set_expire(key, expire_at);
+
+                        let (_broadcast_res, expire_res) = tokio::join!(broadcast_future, expire_future);
+
+                        if is_from_master {
+                            connection.replica_offset += 1;
+                        }
+
+                        match expire_res {
+                            Ok(true) => RESP3Value::Integer(1),
+                            Ok(false) => RESP3Value::Integer(0),
+                            Err(err) => {
+                                log::error!("Failed to pexpire: {:?}", err);
+                                continue;
+                            }
+                        }
+                    }
+                    Request::ExpireAt(key, timestamp) => {
+                        let now_unix = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_secs();
+                        let secs_from_now = timestamp.saturating_sub(now_unix);
+                        let expire_at = Instant::now() + Duration::from_secs(secs_from_now);
+
+                        let broadcast_future = connection
+                            .conn_manager
+                            .broadcast(Request::ExpireAt(key.clone(), timestamp));
+                        let expire_future = connection.kv_store.set_expire(key, expire_at);
+
+                        let (_broadcast_res, expire_res) = tokio::join!(broadcast_future, expire_future);
+
+                        if is_from_master {
+                            connection.replica_offset += 1;
+                        }
+
+                        match expire_res {
+                            Ok(true) => RESP3Value::Integer(1),
+                            Ok(false) => RESP3Value::Integer(0),
+                            Err(err) => {
+                                log::error!("Failed to expireat: {:?}", err);
+                                continue;
+                            }
+                        }
+                    }
+                    Request::Ttl(key) => {
+                        match connection.kv_store.get_ttl(key).await {
+                            Ok(None) => RESP3Value::Integer(-2),
+                            Ok(Some(None)) => RESP3Value::Integer(-1),
+                            Ok(Some(Some(duration))) => RESP3Value::Integer(duration.as_secs() as i64),
+                            Err(err) => {
+                                log::error!("Failed to ttl: {:?}", err);
+                                continue;
+                            }
+                        }
+                    }
+                    Request::PTtl(key) => {
+                        match connection.kv_store.get_ttl(key).await {
+                            Ok(None) => RESP3Value::Integer(-2),
+                            Ok(Some(None)) => RESP3Value::Integer(-1),
+                            Ok(Some(Some(duration))) => RESP3Value::Integer(duration.as_millis() as i64),
+                            Err(err) => {
+                                log::error!("Failed to pttl: {:?}", err);
+                                continue;
+                            }
+                        }
+                    }
+                    Request::Persist(key) => {
+                        let broadcast_future = connection
+                            .conn_manager
+                            .broadcast(Request::Persist(key.clone()));
+                        let persist_future = connection.kv_store.persist(key);
+
+                        let (_broadcast_res, persist_res) = tokio::join!(broadcast_future, persist_future);
+
+                        if is_from_master {
+                            connection.replica_offset += 1;
+                        }
+
+                        match persist_res {
+                            Ok(true) => RESP3Value::Integer(1),
+                            Ok(false) => RESP3Value::Integer(0),
+                            Err(err) => {
+                                log::error!("Failed to persist: {:?}", err);
+                                continue;
+                            }
+                        }
+                    }
+                    Request::MGet(keys) => {
+                        match connection.kv_store.mget(keys).await {
+                            Ok(values) => {
+                                let arr: Vec<RESP3Value> = values
+                                    .into_iter()
+                                    .map(|v| v.unwrap_or(RESP3Value::Null))
+                                    .collect();
+                                RESP3Value::Array(arr)
+                            }
+                            Err(err) => {
+                                log::error!("Failed to mget: {:?}", err);
+                                continue;
+                            }
+                        }
+                    }
+                    Request::MSet(pairs) => {
+                        let broadcast_future = connection
+                            .conn_manager
+                            .broadcast(Request::MSet(pairs.clone()));
+                        let mset_future = connection.kv_store.mset(pairs);
+
+                        let (_broadcast_res, mset_res) = tokio::join!(broadcast_future, mset_future);
+
+                        if is_from_master {
+                            connection.replica_offset += 1;
+                        }
+
+                        match mset_res {
+                            Ok(()) => RESP3Value::SimpleString("OK".to_string()),
+                            Err(err) => {
+                                log::error!("Failed to mset: {:?}", err);
+                                continue;
+                            }
+                        }
+                    }
+                    Request::DbSize => {
+                        match connection.kv_store.dbsize().await {
+                            Ok(size) => RESP3Value::Integer(size as i64),
+                            Err(err) => {
+                                log::error!("Failed to dbsize: {:?}", err);
+                                continue;
+                            }
+                        }
+                    }
+                    Request::FlushDb => {
+                        let broadcast_future = connection
+                            .conn_manager
+                            .broadcast(Request::FlushDb);
+                        let flush_future = connection.kv_store.flushdb();
+
+                        let (_broadcast_res, flush_res) = tokio::join!(broadcast_future, flush_future);
+
+                        if is_from_master {
+                            connection.replica_offset += 1;
+                        }
+
+                        match flush_res {
+                            Ok(()) => RESP3Value::SimpleString("OK".to_string()),
+                            Err(err) => {
+                                log::error!("Failed to flushdb: {:?}", err);
+                                continue;
+                            }
+                        }
+                    }
                 };
 
                 if let ConnectionType::Master = connection.conn_type {

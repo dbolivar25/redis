@@ -43,6 +43,61 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             RESP3Value::BulkString(repl_id.into_bytes()),
             RESP3Value::BulkString(offset.into_bytes()),
         ),
+        Commands::Incr { key } => Request::Incr(RESP3Value::BulkString(key.into_bytes())),
+        Commands::Decr { key } => Request::Decr(RESP3Value::BulkString(key.into_bytes())),
+        Commands::Incrby { key, delta } => {
+            Request::IncrBy(RESP3Value::BulkString(key.into_bytes()), delta)
+        }
+        Commands::Decrby { key, delta } => {
+            Request::DecrBy(RESP3Value::BulkString(key.into_bytes()), delta)
+        }
+        Commands::Append { key, value } => Request::Append(
+            RESP3Value::BulkString(key.into_bytes()),
+            RESP3Value::BulkString(value.into_bytes()),
+        ),
+        Commands::Strlen { key } => Request::StrLen(RESP3Value::BulkString(key.into_bytes())),
+        Commands::Exists { keys } => {
+            Request::Exists(keys.into_iter().map(|k| RESP3Value::BulkString(k.into_bytes())).collect())
+        }
+        Commands::Keys { pattern } => Request::Keys(RESP3Value::BulkString(pattern.into_bytes())),
+        Commands::Rename { key, newkey } => Request::Rename(
+            RESP3Value::BulkString(key.into_bytes()),
+            RESP3Value::BulkString(newkey.into_bytes()),
+        ),
+        Commands::Type { key } => Request::Type(RESP3Value::BulkString(key.into_bytes())),
+        Commands::Expire { key, seconds } => {
+            Request::Expire(RESP3Value::BulkString(key.into_bytes()), seconds)
+        }
+        Commands::Pexpire { key, milliseconds } => {
+            Request::PExpire(RESP3Value::BulkString(key.into_bytes()), milliseconds)
+        }
+        Commands::Expireat { key, timestamp } => {
+            Request::ExpireAt(RESP3Value::BulkString(key.into_bytes()), timestamp)
+        }
+        Commands::Ttl { key } => Request::Ttl(RESP3Value::BulkString(key.into_bytes())),
+        Commands::Pttl { key } => Request::PTtl(RESP3Value::BulkString(key.into_bytes())),
+        Commands::Persist { key } => Request::Persist(RESP3Value::BulkString(key.into_bytes())),
+        Commands::Mget { keys } => {
+            Request::MGet(keys.into_iter().map(|k| RESP3Value::BulkString(k.into_bytes())).collect())
+        }
+        Commands::Mset { pairs } => {
+            if pairs.len() % 2 != 0 {
+                eprintln!("MSET requires an even number of arguments (key value pairs)");
+                std::process::exit(1);
+            }
+            let pairs: Vec<(RESP3Value, RESP3Value)> = pairs
+                .chunks(2)
+                .map(|chunk| {
+                    (
+                        RESP3Value::BulkString(chunk[0].clone().into_bytes()),
+                        RESP3Value::BulkString(chunk[1].clone().into_bytes()),
+                    )
+                })
+                .collect();
+            Request::MSet(pairs)
+        }
+        Commands::Dbsize => Request::DbSize,
+        Commands::Flushdb => Request::FlushDb,
     };
 
     let request = encode_request(&request);

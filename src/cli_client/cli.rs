@@ -17,49 +17,51 @@ pub struct Args {
     pub command: Commands,
 }
 
-/// Supported Redis commands
 #[derive(Subcommand, Debug)]
 pub enum Commands {
-    /// Ping the server
     Ping,
-
-    /// Echo a message
-    Echo {
-        /// The message to echo
-        message: String,
-    },
-
-    /// Set a key-value pair
+    Echo { message: String },
     Set {
-        /// The key to set
         key: String,
-        /// The value to set
         value: String,
-        /// Time-to-live options
         #[clap(subcommand)]
         ttl: Option<TTLOpt>,
     },
-
-    /// Get a key
-    Get {
-        /// The key to get
-        key: String,
-    },
-
-    /// Delete a key
-    Del {
-        /// The key to delete
-        key: String,
-    },
-
-    /// Send PSYNC command (for testing replication)
+    Get { key: String },
+    Del { key: String },
     Psync {
-        /// Replication ID (use "?" for new replica)
         repl_id: String,
-        /// Offset (use "-1" for full sync)
         #[clap(allow_hyphen_values = true)]
         offset: String,
     },
+    Incr { key: String },
+    Decr { key: String },
+    Incrby {
+        key: String,
+        #[clap(allow_hyphen_values = true)]
+        delta: i64,
+    },
+    Decrby {
+        key: String,
+        #[clap(allow_hyphen_values = true)]
+        delta: i64,
+    },
+    Append { key: String, value: String },
+    Strlen { key: String },
+    Exists { keys: Vec<String> },
+    Keys { pattern: String },
+    Rename { key: String, newkey: String },
+    Type { key: String },
+    Expire { key: String, seconds: u64 },
+    Pexpire { key: String, milliseconds: u64 },
+    Expireat { key: String, timestamp: u64 },
+    Ttl { key: String },
+    Pttl { key: String },
+    Persist { key: String },
+    Mget { keys: Vec<String> },
+    Mset { pairs: Vec<String> },
+    Dbsize,
+    Flushdb,
 }
 
 /// Time-to-live options for SET command
