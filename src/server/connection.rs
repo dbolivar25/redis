@@ -24,6 +24,8 @@ pub struct Connection {
     conn_type: ConnectionType,
     kv_store: KVStoreHandle,
     conn_manager: ConnectionManagerHandle,
+    master_repl_id: Option<String>,
+    replica_offset: u64,
 }
 
 /// Represents the type of connection.
@@ -60,6 +62,8 @@ impl Connection {
             addr,
             kv_store,
             conn_manager,
+            master_repl_id: None,
+            replica_offset: 0,
         }
     }
 
@@ -99,9 +103,16 @@ impl Connection {
                         return;
                     }
 
+                    let (repl_id, offset) = match &self.master_repl_id {
+                        Some(id) => (id.clone(), self.replica_offset.to_string()),
+                        None => ("?".to_string(), "-1".to_string()),
+                    };
+
+                    log::info!("Sending PSYNC {} {}", repl_id, offset);
+
                     let psync_req = encode_request(&Request::PSync(
-                        RESP3Value::BulkString(b"?".to_vec()),
-                        RESP3Value::BulkString(b"-1".to_vec()),
+                        RESP3Value::BulkString(repl_id.into_bytes()),
+                        RESP3Value::BulkString(offset.into_bytes()),
                     ));
 
                     let _ = self.stream.send(psync_req).await.inspect_err(|err| {
@@ -119,6 +130,8 @@ impl Connection {
                                     parts[1],
                                     parts[2]
                                 );
+                                self.master_repl_id = Some(parts[1].to_string());
+                                self.replica_offset = parts[2].parse().unwrap_or(0);
                             }
 
                             let snapshot_response = self.stream.next().await;
@@ -199,6 +212,8 @@ async fn run_connection(mut connection: Connection, on_shutdown_complete: onesho
 
                 log::info!("Received request: {}", request);
 
+                let is_from_master = matches!(connection.conn_type, ConnectionType::Master);
+
                 let response = match request {
                     Request::Ping => RESP3Value::SimpleString("PONG".to_string()),
                     Request::Echo(value) => value,
@@ -208,18 +223,27 @@ async fn run_connection(mut connection: Connection, on_shutdown_complete: onesho
                             TTL::Milliseconds(ttl) => Duration::from_millis(*ttl),
                         });
 
-                        let broadcast_future = connection
-                            .conn_manager
-                            .broadcast(Request::Set(key.clone(), value.clone(), ttl));
-                        let set_future = connection.kv_store.set(key, value, expiration);
-
-                        let (_broadcast_result, set_result) = tokio::join!(broadcast_future, set_future);
-
-                        match set_result {
-                            Ok(_) => RESP3Value::SimpleString("OK".to_string()),
-                            Err(err) => {
+                        if is_from_master {
+                            if let Err(err) = connection.kv_store.set(key, value, expiration).await {
                                 log::error!("Failed to set key: {:?}", err);
                                 continue;
+                            }
+                            connection.replica_offset += 1;
+                            RESP3Value::SimpleString("OK".to_string())
+                        } else {
+                            let broadcast_future = connection
+                                .conn_manager
+                                .broadcast(Request::Set(key.clone(), value.clone(), ttl));
+                            let set_future = connection.kv_store.set(key, value, expiration);
+
+                            let (_broadcast_result, set_result) = tokio::join!(broadcast_future, set_future);
+
+                            match set_result {
+                                Ok(_) => RESP3Value::SimpleString("OK".to_string()),
+                                Err(err) => {
+                                    log::error!("Failed to set key: {:?}", err);
+                                    continue;
+                                }
                             }
                         }
                     }
@@ -235,23 +259,32 @@ async fn run_connection(mut connection: Connection, on_shutdown_complete: onesho
                         }
                     }
                     Request::Del(key) => {
-                        let broadcast_future = connection
-                            .conn_manager
-                            .broadcast(Request::Del(key.clone()));
-                        let del_future = connection.kv_store.del(key);
-
-                        let (_broadcast_res, del_res) = tokio::join!(broadcast_future, del_future);
-
-                        match del_res {
-                            Ok(_) => RESP3Value::SimpleString("OK".to_string()),
-                            Err(err) => {
+                        if is_from_master {
+                            if let Err(err) = connection.kv_store.del(key).await {
                                 log::error!("Failed to del key: {:?}", err);
                                 continue;
                             }
+                            connection.replica_offset += 1;
+                            RESP3Value::SimpleString("OK".to_string())
+                        } else {
+                            let broadcast_future = connection
+                                .conn_manager
+                                .broadcast(Request::Del(key.clone()));
+                            let del_future = connection.kv_store.del(key);
+
+                            let (_broadcast_res, del_res) = tokio::join!(broadcast_future, del_future);
+
+                            match del_res {
+                                Ok(_) => RESP3Value::SimpleString("OK".to_string()),
+                                Err(err) => {
+                                    log::error!("Failed to del key: {:?}", err);
+                                    continue;
+                                }
+                            }
                         }
                     }
-                    Request::PSync(_repl_id, _offset) => {
-                        let repl_id = connection
+                    Request::PSync(repl_id_val, offset_val) => {
+                        let our_repl_id = connection
                             .conn_manager
                             .get_repl_id()
                             .await
@@ -263,8 +296,59 @@ async fn run_connection(mut connection: Connection, on_shutdown_complete: onesho
                             .await
                             .unwrap_or(0);
 
+                        let replica_repl_id = match &repl_id_val {
+                            RESP3Value::BulkString(b) => String::from_utf8_lossy(b).to_string(),
+                            _ => "?".to_string(),
+                        };
+                        let replica_offset: i64 = match &offset_val {
+                            RESP3Value::BulkString(b) => {
+                                String::from_utf8_lossy(b).parse().unwrap_or(-1)
+                            }
+                            _ => -1,
+                        };
+
+                        let can_partial = replica_repl_id == our_repl_id && replica_offset >= 0;
+
+                        if can_partial {
+                            let from_offset = replica_offset as u64;
+                            if let Ok(Some(backlog)) = connection.kv_store.get_backlog_from(from_offset).await {
+                                log::info!(
+                                    "Partial sync for replica {}: sending {} commands from offset {}",
+                                    connection.addr, backlog.len(), from_offset
+                                );
+
+                                let continue_msg = RESP3Value::SimpleString("CONTINUE".to_string());
+                                if let Err(e) = connection.stream.send(continue_msg).await {
+                                    log::error!("Failed to send CONTINUE: {e}");
+                                    continue;
+                                }
+
+                                for cmd in backlog {
+                                    let encoded = encode_request(&cmd);
+                                    if let Err(e) = connection.stream.send(encoded).await {
+                                        log::error!("Failed to send backlog command: {e}");
+                                        break;
+                                    }
+                                }
+
+                                connection
+                                    .conn_manager
+                                    .set_replica(connection.addr)
+                                    .await
+                                    .inspect_err(|err| log::error!("Failed to set replica: {:?}", err))
+                                    .ok();
+
+                                continue;
+                            }
+                        }
+
+                        log::info!(
+                            "Full sync for replica {}: repl_id match={}, offset={}",
+                            connection.addr, replica_repl_id == our_repl_id, replica_offset
+                        );
+
                         let fullresync = RESP3Value::SimpleString(
-                            format!("FULLRESYNC {repl_id} {current_offset}")
+                            format!("FULLRESYNC {our_repl_id} {current_offset}")
                         );
 
                         if let Err(e) = connection.stream.send(fullresync).await {

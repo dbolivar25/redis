@@ -1,11 +1,20 @@
+use crate::common::codec::Request;
 use crate::common::resp3::RESP3Value;
 use anyhow::Result;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::{interval_at, Instant, Interval};
 
 pub type SnapshotEntry = (RESP3Value, RESP3Value, Option<Duration>);
+
+const BACKLOG_MAX_ENTRIES: usize = 10_000;
+
+#[derive(Clone)]
+struct BacklogEntry {
+    offset: u64,
+    request: Request,
+}
 
 /// A key-value store that supports setting, getting, and deleting key-value pairs.
 /// Each key-value pair can have an optional expiration time.
@@ -15,6 +24,7 @@ pub struct KVStore {
     active_expiration_interval: Interval,
     kv_store: HashMap<Key, Value>,
     offset: u64,
+    backlog: VecDeque<BacklogEntry>,
 }
 
 type Key = RESP3Value;
@@ -25,6 +35,7 @@ pub enum KVStoreMessage {
     Set {
         key: Key,
         value: Value,
+        ttl: Option<Duration>,
     },
     Get {
         key: Key,
@@ -38,6 +49,10 @@ pub enum KVStoreMessage {
     },
     Snapshot {
         respond_to: oneshot::Sender<Vec<SnapshotEntry>>,
+    },
+    GetBacklogFrom {
+        from_offset: u64,
+        respond_to: oneshot::Sender<Option<Vec<Request>>>,
     },
     Shutdown,
 }
@@ -54,15 +69,32 @@ impl KVStore {
             active_expiration_interval,
             kv_store,
             offset: 0,
+            backlog: VecDeque::new(),
         }
     }
 
-    /// Handle a message sent to the KVStore.
     fn handle_message(&mut self, msg: KVStoreMessage) {
         match msg {
-            KVStoreMessage::Set { key, value } => {
-                self.kv_store.insert(key, value);
+            KVStoreMessage::Set { key, value, ttl } => {
                 self.offset += 1;
+                
+                let ttl_for_backlog = ttl.map(|d| {
+                    if d.as_secs() > 0 && d.subsec_millis() == 0 {
+                        crate::common::codec::TTL::Seconds(d.as_secs())
+                    } else {
+                        crate::common::codec::TTL::Milliseconds(d.as_millis() as u64)
+                    }
+                });
+                let request = Request::Set(key.clone(), value.0.clone(), ttl_for_backlog);
+                self.backlog.push_back(BacklogEntry {
+                    offset: self.offset,
+                    request,
+                });
+                if self.backlog.len() > BACKLOG_MAX_ENTRIES {
+                    self.backlog.pop_front();
+                }
+                
+                self.kv_store.insert(key, value);
             }
             KVStoreMessage::Get { key, respond_to } => match self.kv_store.get(&key).cloned() {
                 Some((_value, Some(expiry))) if expiry < Instant::now() => {
@@ -79,8 +111,18 @@ impl KVStore {
                 }
             },
             KVStoreMessage::Del { key } => {
-                self.kv_store.remove(&key);
                 self.offset += 1;
+                
+                let request = Request::Del(key.clone());
+                self.backlog.push_back(BacklogEntry {
+                    offset: self.offset,
+                    request,
+                });
+                if self.backlog.len() > BACKLOG_MAX_ENTRIES {
+                    self.backlog.pop_front();
+                }
+                
+                self.kv_store.remove(&key);
             }
             KVStoreMessage::GetOffset { respond_to } => {
                 respond_to.send(self.offset).ok();
@@ -101,6 +143,30 @@ impl KVStore {
                     })
                     .collect();
                 respond_to.send(snapshot).ok();
+            }
+            KVStoreMessage::GetBacklogFrom { from_offset, respond_to } => {
+                let result = if from_offset > self.offset {
+                    None
+                } else if self.backlog.is_empty() {
+                    if from_offset == self.offset {
+                        Some(vec![])
+                    } else {
+                        None
+                    }
+                } else {
+                    let min_off = self.backlog.front().unwrap().offset;
+                    if from_offset < min_off.saturating_sub(1) {
+                        None
+                    } else {
+                        let commands: Vec<Request> = self.backlog
+                            .iter()
+                            .filter(|e| e.offset > from_offset)
+                            .map(|e| e.request.clone())
+                            .collect();
+                        Some(commands)
+                    }
+                };
+                respond_to.send(result).ok();
             }
             KVStoreMessage::Shutdown => {
                 self.receiver.close();
@@ -163,15 +229,15 @@ impl KVStoreHandle {
         (KVStoreHandle { sender }, shutdown_complete)
     }
 
-    /// Set a key-value pair in the KVStore. The key-value pair can have an optional expiration time.
     pub async fn set(
         &self,
         key: RESP3Value,
         value: RESP3Value,
         expiration: Option<Instant>,
     ) -> Result<()> {
+        let ttl = expiration.map(|exp| exp.saturating_duration_since(Instant::now()));
         let value = (value, expiration);
-        let msg = KVStoreMessage::Set { key, value };
+        let msg = KVStoreMessage::Set { key, value, ttl };
         self.sender.send(msg).await?;
         Ok(())
     }
@@ -193,6 +259,13 @@ impl KVStoreHandle {
     pub async fn get_offset(&self) -> Result<u64> {
         let (respond_to, response) = oneshot::channel();
         let msg = KVStoreMessage::GetOffset { respond_to };
+        self.sender.send(msg).await?;
+        response.await.map_err(Into::into)
+    }
+
+    pub async fn get_backlog_from(&self, from_offset: u64) -> Result<Option<Vec<Request>>> {
+        let (respond_to, response) = oneshot::channel();
+        let msg = KVStoreMessage::GetBacklogFrom { from_offset, respond_to };
         self.sender.send(msg).await?;
         response.await.map_err(Into::into)
     }

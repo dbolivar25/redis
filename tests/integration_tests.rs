@@ -483,3 +483,233 @@ async fn test_replication_with_ttl() {
     master_handle.abort();
     replica_handle.abort();
 }
+
+// =============================================================================
+// Partial Sync Tests
+// =============================================================================
+
+async fn send_raw_psync(
+    client: &mut Framed<TcpStream, RESP3Codec>,
+    repl_id: &str,
+    offset: &str,
+) -> RESP3Value {
+    let psync = Request::PSync(
+        RESP3Value::BulkString(repl_id.as_bytes().to_vec()),
+        RESP3Value::BulkString(offset.as_bytes().to_vec()),
+    );
+    send_command(client, psync).await
+}
+
+#[tokio::test]
+async fn test_partial_sync_with_matching_offset() {
+    let (master_handle, master_addr) = start_server().await;
+    let mut master_client = connect_client(master_addr).await;
+
+    let response = send_command(
+        &mut master_client,
+        Request::Set(
+            RESP3Value::BulkString(b"key1".to_vec()),
+            RESP3Value::BulkString(b"value1".to_vec()),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(response, RESP3Value::SimpleString("OK".to_string()));
+
+    let mut psync_client = connect_client(master_addr).await;
+    let response = send_raw_psync(&mut psync_client, "?", "-1").await;
+
+    let repl_id = if let RESP3Value::SimpleString(s) = &response {
+        assert!(s.starts_with("FULLRESYNC"));
+        let parts: Vec<&str> = s.split_whitespace().collect();
+        assert_eq!(parts.len(), 3);
+        assert_eq!(parts[2], "1");
+        parts[1].to_string()
+    } else {
+        panic!("Expected FULLRESYNC, got {:?}", response);
+    };
+
+    let _snapshot = psync_client.next().await.unwrap().unwrap();
+
+    let response = send_command(
+        &mut master_client,
+        Request::Set(
+            RESP3Value::BulkString(b"key2".to_vec()),
+            RESP3Value::BulkString(b"value2".to_vec()),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(response, RESP3Value::SimpleString("OK".to_string()));
+
+    let mut psync_client2 = connect_client(master_addr).await;
+    let response = send_raw_psync(&mut psync_client2, &repl_id, "1").await;
+
+    if let RESP3Value::SimpleString(s) = &response {
+        assert_eq!(s, "CONTINUE", "Expected CONTINUE for partial sync");
+    } else {
+        panic!("Expected CONTINUE, got {:?}", response);
+    }
+
+    let backlog_cmd = psync_client2.next().await.unwrap().unwrap();
+    if let RESP3Value::Array(parts) = backlog_cmd {
+        assert_eq!(parts.len(), 3);
+        assert_eq!(parts[0], RESP3Value::BulkString(b"SET".to_vec()));
+        assert_eq!(parts[1], RESP3Value::BulkString(b"key2".to_vec()));
+        assert_eq!(parts[2], RESP3Value::BulkString(b"value2".to_vec()));
+    } else {
+        panic!("Expected SET command in backlog, got {:?}", backlog_cmd);
+    }
+
+    master_handle.abort();
+}
+
+#[tokio::test]
+async fn test_full_sync_on_repl_id_mismatch() {
+    let (master_handle, master_addr) = start_server().await;
+    let mut master_client = connect_client(master_addr).await;
+
+    let response = send_command(
+        &mut master_client,
+        Request::Set(
+            RESP3Value::BulkString(b"key1".to_vec()),
+            RESP3Value::BulkString(b"value1".to_vec()),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(response, RESP3Value::SimpleString("OK".to_string()));
+
+    let mut psync_client = connect_client(master_addr).await;
+    let response = send_raw_psync(&mut psync_client, "wrong_repl_id", "0").await;
+
+    if let RESP3Value::SimpleString(s) = &response {
+        assert!(
+            s.starts_with("FULLRESYNC"),
+            "Expected FULLRESYNC for mismatched repl_id, got {}",
+            s
+        );
+    } else {
+        panic!("Expected FULLRESYNC, got {:?}", response);
+    }
+
+    master_handle.abort();
+}
+
+#[tokio::test]
+async fn test_full_sync_on_offset_too_old() {
+    let (master_handle, master_addr) = start_server().await;
+    let mut master_client = connect_client(master_addr).await;
+
+    let response = send_command(
+        &mut master_client,
+        Request::Set(
+            RESP3Value::BulkString(b"key1".to_vec()),
+            RESP3Value::BulkString(b"value1".to_vec()),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(response, RESP3Value::SimpleString("OK".to_string()));
+
+    let mut psync_client = connect_client(master_addr).await;
+    let response = send_raw_psync(&mut psync_client, "?", "-1").await;
+
+    let repl_id = if let RESP3Value::SimpleString(s) = &response {
+        assert!(s.starts_with("FULLRESYNC"));
+        let parts: Vec<&str> = s.split_whitespace().collect();
+        parts[1].to_string()
+    } else {
+        panic!("Expected FULLRESYNC, got {:?}", response);
+    };
+
+    let _snapshot = psync_client.next().await.unwrap().unwrap();
+
+    let mut psync_client2 = connect_client(master_addr).await;
+    let response = send_raw_psync(&mut psync_client2, &repl_id, "99999").await;
+
+    if let RESP3Value::SimpleString(s) = &response {
+        assert!(
+            s.starts_with("FULLRESYNC"),
+            "Expected FULLRESYNC for offset too far ahead, got {}",
+            s
+        );
+    } else {
+        panic!("Expected FULLRESYNC, got {:?}", response);
+    }
+
+    master_handle.abort();
+}
+
+#[tokio::test]
+async fn test_partial_sync_multiple_commands() {
+    let (master_handle, master_addr) = start_server().await;
+    let mut master_client = connect_client(master_addr).await;
+
+    let mut psync_client = connect_client(master_addr).await;
+    let response = send_raw_psync(&mut psync_client, "?", "-1").await;
+
+    let repl_id = if let RESP3Value::SimpleString(s) = &response {
+        assert!(s.starts_with("FULLRESYNC"));
+        let parts: Vec<&str> = s.split_whitespace().collect();
+        parts[1].to_string()
+    } else {
+        panic!("Expected FULLRESYNC, got {:?}", response);
+    };
+
+    let _snapshot = psync_client.next().await.unwrap().unwrap();
+
+    for i in 1..=5 {
+        let response = send_command(
+            &mut master_client,
+            Request::Set(
+                RESP3Value::BulkString(format!("key{i}").into_bytes()),
+                RESP3Value::BulkString(format!("value{i}").into_bytes()),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(response, RESP3Value::SimpleString("OK".to_string()));
+    }
+
+    let response = send_command(
+        &mut master_client,
+        Request::Del(RESP3Value::BulkString(b"key3".to_vec())),
+    )
+    .await;
+    assert_eq!(response, RESP3Value::SimpleString("OK".to_string()));
+
+    let mut psync_client2 = connect_client(master_addr).await;
+    let response = send_raw_psync(&mut psync_client2, &repl_id, "0").await;
+
+    if let RESP3Value::SimpleString(s) = &response {
+        assert_eq!(s, "CONTINUE");
+    } else {
+        panic!("Expected CONTINUE, got {:?}", response);
+    }
+
+    let mut commands = vec![];
+    for _ in 0..6 {
+        let cmd = psync_client2.next().await.unwrap().unwrap();
+        commands.push(cmd);
+    }
+
+    assert_eq!(commands.len(), 6);
+
+    for i in 0..5 {
+        if let RESP3Value::Array(parts) = &commands[i] {
+            assert_eq!(parts[0], RESP3Value::BulkString(b"SET".to_vec()));
+        } else {
+            panic!("Expected SET command, got {:?}", commands[i]);
+        }
+    }
+
+    if let RESP3Value::Array(parts) = &commands[5] {
+        assert_eq!(parts[0], RESP3Value::BulkString(b"DEL".to_vec()));
+        assert_eq!(parts[1], RESP3Value::BulkString(b"key3".to_vec()));
+    } else {
+        panic!("Expected DEL command, got {:?}", commands[5]);
+    }
+
+    master_handle.abort();
+}
