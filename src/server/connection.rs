@@ -223,27 +223,22 @@ async fn run_connection(mut connection: Connection, on_shutdown_complete: onesho
                             TTL::Milliseconds(ttl) => Duration::from_millis(*ttl),
                         });
 
+                        let broadcast_future = connection
+                            .conn_manager
+                            .broadcast(Request::Set(key.clone(), value.clone(), ttl.clone()));
+                        let set_future = connection.kv_store.set(key, value, expiration);
+
+                        let (_broadcast_result, set_result) = tokio::join!(broadcast_future, set_future);
+
                         if is_from_master {
-                            if let Err(err) = connection.kv_store.set(key, value, expiration).await {
+                            connection.replica_offset += 1;
+                        }
+
+                        match set_result {
+                            Ok(_) => RESP3Value::SimpleString("OK".to_string()),
+                            Err(err) => {
                                 log::error!("Failed to set key: {:?}", err);
                                 continue;
-                            }
-                            connection.replica_offset += 1;
-                            RESP3Value::SimpleString("OK".to_string())
-                        } else {
-                            let broadcast_future = connection
-                                .conn_manager
-                                .broadcast(Request::Set(key.clone(), value.clone(), ttl));
-                            let set_future = connection.kv_store.set(key, value, expiration);
-
-                            let (_broadcast_result, set_result) = tokio::join!(broadcast_future, set_future);
-
-                            match set_result {
-                                Ok(_) => RESP3Value::SimpleString("OK".to_string()),
-                                Err(err) => {
-                                    log::error!("Failed to set key: {:?}", err);
-                                    continue;
-                                }
                             }
                         }
                     }
@@ -259,27 +254,22 @@ async fn run_connection(mut connection: Connection, on_shutdown_complete: onesho
                         }
                     }
                     Request::Del(key) => {
+                        let broadcast_future = connection
+                            .conn_manager
+                            .broadcast(Request::Del(key.clone()));
+                        let del_future = connection.kv_store.del(key);
+
+                        let (_broadcast_res, del_res) = tokio::join!(broadcast_future, del_future);
+
                         if is_from_master {
-                            if let Err(err) = connection.kv_store.del(key).await {
+                            connection.replica_offset += 1;
+                        }
+
+                        match del_res {
+                            Ok(_) => RESP3Value::SimpleString("OK".to_string()),
+                            Err(err) => {
                                 log::error!("Failed to del key: {:?}", err);
                                 continue;
-                            }
-                            connection.replica_offset += 1;
-                            RESP3Value::SimpleString("OK".to_string())
-                        } else {
-                            let broadcast_future = connection
-                                .conn_manager
-                                .broadcast(Request::Del(key.clone()));
-                            let del_future = connection.kv_store.del(key);
-
-                            let (_broadcast_res, del_res) = tokio::join!(broadcast_future, del_future);
-
-                            match del_res {
-                                Ok(_) => RESP3Value::SimpleString("OK".to_string()),
-                                Err(err) => {
-                                    log::error!("Failed to del key: {:?}", err);
-                                    continue;
-                                }
                             }
                         }
                     }
