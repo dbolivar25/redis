@@ -115,18 +115,18 @@ impl Decoder for RESP3Codec {
     type Item = RESP3Value;
     type Error = io::Error;
 
-    /// Decodes a RESP3 value from a byte buffer.
     fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
         if src.is_empty() {
             return Ok(None);
         }
 
         match decode_resp3(src) {
-            Ok((resp3, rest)) => {
-                let len = src.len() - rest.len();
-                src.advance(len);
+            Ok(Some((resp3, rest))) => {
+                let consumed = src.len() - rest.len();
+                src.advance(consumed);
                 Ok(Some(resp3))
             }
+            Ok(None) => Ok(None),
             Err(e) => Err(io::Error::new(io::ErrorKind::InvalidData, e)),
         }
     }

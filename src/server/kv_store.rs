@@ -643,9 +643,8 @@ pub struct KVStoreHandle {
 }
 
 impl KVStoreHandle {
-    /// Create a new KVStoreHandle and a oneshot receiver that will be signalled when the KVStore is shut down.
     pub fn new() -> (Self, oneshot::Receiver<()>) {
-        let (sender, receiver) = mpsc::channel(128);
+        let (sender, receiver) = mpsc::channel(1024);
         let (on_shutdown_complete, shutdown_complete) = oneshot::channel();
         let active_expiration_interval_period = Duration::from_millis(200);
         let active_expiration_interval = interval_at(

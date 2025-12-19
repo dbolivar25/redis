@@ -117,9 +117,26 @@ impl ConnectionManager {
                 }
             }
             ConnectionManagerMessage::Broadcast { request } => {
+                let mut to_disconnect = vec![];
+
                 for (replica, _) in &self.replicas {
                     if let Err(e) = replica.try_forward_request(request.clone()) {
-                        log::warn!("Replica {} lagging, failed to forward: {e}", replica.addr);
+                        log::warn!(
+                            "Replica {} buffer full ({e}), scheduling disconnect for resync",
+                            replica.addr
+                        );
+                        to_disconnect.push(replica.addr);
+                    }
+                }
+
+                for addr in to_disconnect {
+                    if let Some(idx) = self.replicas.iter().position(|(r, _)| r.addr == addr) {
+                        let (handle, _shutdown_rx) = self.replicas.remove(idx);
+                        tokio::spawn(async move {
+                            if let Err(e) = handle.shutdown().await {
+                                log::error!("Failed to shutdown lagging replica: {e}");
+                            }
+                        });
                     }
                 }
             }
@@ -196,9 +213,8 @@ pub struct ConnectionManagerHandle {
 }
 
 impl ConnectionManagerHandle {
-    /// Creates a new ConnectionManagerHandle and a oneshot receiver that can be used to wait for the ConnectionManager to shut down.
     pub fn new() -> (Self, oneshot::Receiver<()>) {
-        let (sender, receiver) = mpsc::channel(128);
+        let (sender, receiver) = mpsc::channel(512);
         let (on_shutdown_complete, shutdown_complete) = oneshot::channel();
 
         let repl_id = generate_repl_id();

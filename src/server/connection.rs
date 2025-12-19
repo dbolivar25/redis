@@ -75,11 +75,17 @@ impl Connection {
 
                 let resp3 = encode_request(&request);
 
-                let _ = self
-                    .stream
-                    .send(resp3)
-                    .await
-                    .inspect_err(|err| log::error!("Failed to send request: {:?}", err));
+                match tokio::time::timeout(Duration::from_secs(5), self.stream.send(resp3)).await {
+                    Ok(Ok(())) => {}
+                    Ok(Err(e)) => {
+                        log::error!("Write error to {}: {e}, closing connection", self.addr);
+                        self.receiver.close();
+                    }
+                    Err(_) => {
+                        log::error!("Write timeout to {}, closing connection", self.addr);
+                        self.receiver.close();
+                    }
+                }
             }
             ConnectionMessage::SetConnType { conn_type } => {
                 self.conn_type = conn_type;
@@ -767,7 +773,7 @@ impl ConnectionHandle {
         kv_store: KVStoreHandle,
         conn_manager: ConnectionManagerHandle,
     ) -> (Self, oneshot::Receiver<()>) {
-        let (sender, receiver) = mpsc::channel(128);
+        let (sender, receiver) = mpsc::channel(1024);
         let (on_shutdown_complete, shutdown_complete) = oneshot::channel();
 
         let connection = Connection::new(receiver, stream, addr, kv_store, conn_manager);

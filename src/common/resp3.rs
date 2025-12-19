@@ -64,8 +64,11 @@ pub fn encode_resp3(value: &RESP3Value) -> Vec<u8> {
 }
 
 /// Decodes a RESP3 string into a RESP3 value. Returns the decoded value and the remaining data.
-pub fn decode_resp3(input: &[u8]) -> Result<(RESP3Value, &[u8])> {
-    debug_assert!(!input.is_empty());
+/// Returns Ok(Some((value, rest))) on success, Ok(None) if data is incomplete, Err on malformed data.
+pub fn decode_resp3(input: &[u8]) -> Result<Option<(RESP3Value, &[u8])>> {
+    if input.is_empty() {
+        return Ok(None);
+    }
 
     match input.first() {
         Some(b'+') => decode_simple_string(&input[1..]),
@@ -74,104 +77,102 @@ pub fn decode_resp3(input: &[u8]) -> Result<(RESP3Value, &[u8])> {
         Some(b'$') => decode_bulk_string(&input[1..]),
         Some(b'*') => decode_array(&input[1..]),
         Some(b'_') => decode_null(&input[1..]),
-        _ => bail!("Invalid RESP3 value"),
+        Some(c) => bail!("Invalid RESP3 type marker: {}", *c as char),
+        None => Ok(None),
     }
 }
 
-/// Decodes a simple string from a byte array after the identifying character has been removed.
-/// Returns the decoded value and the remaining data.
-fn decode_simple_string(input: &[u8]) -> Result<(RESP3Value, &[u8])> {
-    let (s, rest) = read_through_crlf(input)?;
-
-    debug_assert!(!s.contains('\r') && !s.contains('\n'));
-
-    Ok((RESP3Value::SimpleString(s), rest))
+fn decode_simple_string(input: &[u8]) -> Result<Option<(RESP3Value, &[u8])>> {
+    let Some((s, rest)) = read_through_crlf(input)? else {
+        return Ok(None);
+    };
+    Ok(Some((RESP3Value::SimpleString(s), rest)))
 }
 
-/// Decodes a simple error from a byte array after the identifying character has been removed.
-/// Returns the decoded value and the remaining data.
-fn decode_simple_error(input: &[u8]) -> Result<(RESP3Value, &[u8])> {
-    let (s, rest) = read_through_crlf(input)?;
-
-    debug_assert!(!s.contains('\r') && !s.contains('\n'));
-
-    Ok((RESP3Value::SimpleError(s), rest))
+fn decode_simple_error(input: &[u8]) -> Result<Option<(RESP3Value, &[u8])>> {
+    let Some((s, rest)) = read_through_crlf(input)? else {
+        return Ok(None);
+    };
+    Ok(Some((RESP3Value::SimpleError(s), rest)))
 }
 
-/// Decodes an integer from a byte array after the identifying character has been removed.
-/// Returns the decoded value and the remaining data.
-fn decode_integer(input: &[u8]) -> Result<(RESP3Value, &[u8])> {
-    let (s, rest) = read_through_crlf(input)?;
+fn decode_integer(input: &[u8]) -> Result<Option<(RESP3Value, &[u8])>> {
+    let Some((s, rest)) = read_through_crlf(input)? else {
+        return Ok(None);
+    };
     let n = s.parse::<i64>().map_err(|e| anyhow!(e))?;
-
-    Ok((RESP3Value::Integer(n), rest))
+    Ok(Some((RESP3Value::Integer(n), rest)))
 }
 
-/// Decodes a bulk string from a byte array after the identifying character has been removed.
-/// Returns the decoded value and the remaining data.
-fn decode_bulk_string(input: &[u8]) -> Result<(RESP3Value, &[u8])> {
-    let (len_str, rest) = read_through_crlf(input)?;
+fn decode_bulk_string(input: &[u8]) -> Result<Option<(RESP3Value, &[u8])>> {
+    let Some((len_str, rest)) = read_through_crlf(input)? else {
+        return Ok(None);
+    };
+
     if len_str == "-1" {
-        let rest = rest
-            .get(2..)
-            .ok_or_else(|| anyhow!("Invalid bulk string"))?;
-        return Ok((RESP3Value::Null, rest));
+        return Ok(Some((RESP3Value::Null, rest)));
     }
-    let len = len_str.parse::<usize>().map_err(|e| anyhow!(e))?;
+
+    let len = len_str.parse::<usize>().map_err(|e| anyhow!("Invalid bulk string length: {e}"))?;
+
     if rest.len() < len + 2 {
-        bail!("Insufficient data for bulk string");
+        return Ok(None);
     }
+
     let data = rest[..len].to_vec();
-
-    debug_assert_eq!(data.len(), len);
-
-    Ok((RESP3Value::BulkString(data), &rest[len + 2..]))
+    Ok(Some((RESP3Value::BulkString(data), &rest[len + 2..])))
 }
 
-/// Decodes an array from a byte array after the identifying character has been removed.
-/// Returns the decoded value and the remaining data.
-fn decode_array(input: &[u8]) -> Result<(RESP3Value, &[u8])> {
-    let (len_str, mut rest) = read_through_crlf(input)?;
+fn decode_array(input: &[u8]) -> Result<Option<(RESP3Value, &[u8])>> {
+    let Some((len_str, mut rest)) = read_through_crlf(input)? else {
+        return Ok(None);
+    };
+
     if len_str == "-1" {
-        let rest = rest
-            .get(2..)
-            .ok_or_else(|| anyhow!("Invalid bulk string"))?;
-        return Ok((RESP3Value::Null, rest));
+        return Ok(Some((RESP3Value::Null, rest)));
     }
-    let len = len_str.parse::<usize>().map_err(|e| anyhow!(e))?;
+
+    let len = len_str.parse::<usize>().map_err(|e| anyhow!("Invalid array length: {e}"))?;
     let mut values = Vec::with_capacity(len);
+
     for _ in 0..len {
-        let (value, new_rest) = decode_resp3(rest)?;
-        values.push(value);
-        rest = new_rest;
-    }
-
-    debug_assert_eq!(values.len(), len);
-
-    Ok((RESP3Value::Array(values), rest))
-}
-
-/// Decodes a null value from a byte array after the identifying character has been removed.
-/// Returns the decoded value and the remaining data.
-fn decode_null(input: &[u8]) -> Result<(RESP3Value, &[u8])> {
-    match &input[..2] {
-        b"\r\n" => Ok((RESP3Value::Null, &input[2..])),
-        _ => bail!("Invalid null value"),
-    }
-}
-
-/// Reads a string from a byte array until a CRLF sequence is found. Returns the string and the
-/// remaining data.
-fn read_through_crlf(input: &[u8]) -> Result<(String, &[u8])> {
-    if let Some((pos, _)) = input.iter().find_position(|&&b| b == b'\r') {
-        if let Some(&b'\n') = input.get(pos + 1) {
-            let s = str::from_utf8(&input[..pos]).map_err(|e| anyhow!(e))?;
-            Ok((s.to_string(), &input[pos + 2..]))
-        } else {
-            bail!("LF not found")
+        match decode_resp3(rest)? {
+            Some((value, new_rest)) => {
+                values.push(value);
+                rest = new_rest;
+            }
+            None => return Ok(None),
         }
+    }
+
+    Ok(Some((RESP3Value::Array(values), rest)))
+}
+
+fn decode_null(input: &[u8]) -> Result<Option<(RESP3Value, &[u8])>> {
+    if input.len() < 2 {
+        return Ok(None);
+    }
+
+    if &input[..2] == b"\r\n" {
+        Ok(Some((RESP3Value::Null, &input[2..])))
     } else {
-        bail!("CRLF not found")
+        bail!("Invalid null value")
+    }
+}
+
+fn read_through_crlf(input: &[u8]) -> Result<Option<(String, &[u8])>> {
+    match input.iter().find_position(|&&b| b == b'\r') {
+        Some((pos, _)) => {
+            if input.get(pos + 1) == Some(&b'\n') {
+                let s = str::from_utf8(&input[..pos]).map_err(|e| anyhow!(e))?;
+                Ok(Some((s.to_string(), &input[pos + 2..])))
+            } else if input.len() == pos + 1 {
+                Ok(None)
+            } else {
+                bail!("Expected LF after CR")
+            }
+        }
+        None => Ok(None),
     }
 }
 
@@ -182,7 +183,7 @@ mod tests {
     #[test]
     fn test_simple_string() {
         let input = b"+OK\r\n";
-        let (value, rest) = decode_resp3(input).unwrap();
+        let (value, rest) = decode_resp3(input).unwrap().unwrap();
         assert_eq!(value, RESP3Value::SimpleString("OK".to_string()));
         assert!(rest.is_empty());
 
@@ -193,7 +194,7 @@ mod tests {
     #[test]
     fn test_error() {
         let input = b"-Error message\r\n";
-        let (value, rest) = decode_resp3(input).unwrap();
+        let (value, rest) = decode_resp3(input).unwrap().unwrap();
         assert_eq!(value, RESP3Value::SimpleError("Error message".to_string()));
         assert!(rest.is_empty());
 
@@ -204,7 +205,7 @@ mod tests {
     #[test]
     fn test_integer() {
         let input = b":1000\r\n";
-        let (value, rest) = decode_resp3(input).unwrap();
+        let (value, rest) = decode_resp3(input).unwrap().unwrap();
         assert_eq!(value, RESP3Value::Integer(1000));
         assert!(rest.is_empty());
 
@@ -215,7 +216,7 @@ mod tests {
     #[test]
     fn test_bulk_string() {
         let input = b"$5\r\nhello\r\n";
-        let (value, rest) = decode_resp3(input).unwrap();
+        let (value, rest) = decode_resp3(input).unwrap().unwrap();
         assert_eq!(value, RESP3Value::BulkString(b"hello".to_vec()));
         assert!(rest.is_empty());
 
@@ -226,7 +227,7 @@ mod tests {
     #[test]
     fn test_null() {
         let input = b"_\r\n";
-        let (value, rest) = decode_resp3(input).unwrap();
+        let (value, rest) = decode_resp3(input).unwrap().unwrap();
         assert_eq!(value, RESP3Value::Null);
         assert!(rest.is_empty());
 
@@ -237,7 +238,7 @@ mod tests {
     #[test]
     fn test_array() {
         let input = b"*2\r\n$5\r\nhello\r\n:10\r\n";
-        let (value, rest) = decode_resp3(input).unwrap();
+        let (value, rest) = decode_resp3(input).unwrap().unwrap();
         assert_eq!(
             value,
             RESP3Value::Array(vec![
@@ -249,5 +250,30 @@ mod tests {
 
         let encoded = encode_resp3(&value);
         assert_eq!(encoded.as_slice(), input.as_slice());
+    }
+
+    #[test]
+    fn test_incomplete_simple_string() {
+        assert!(decode_resp3(b"+OK").unwrap().is_none());
+        assert!(decode_resp3(b"+OK\r").unwrap().is_none());
+    }
+
+    #[test]
+    fn test_incomplete_bulk_string() {
+        assert!(decode_resp3(b"$5\r\n").unwrap().is_none());
+        assert!(decode_resp3(b"$5\r\nhel").unwrap().is_none());
+        assert!(decode_resp3(b"$5\r\nhello").unwrap().is_none());
+        assert!(decode_resp3(b"$5\r\nhello\r").unwrap().is_none());
+    }
+
+    #[test]
+    fn test_incomplete_array() {
+        assert!(decode_resp3(b"*2\r\n").unwrap().is_none());
+        assert!(decode_resp3(b"*2\r\n$5\r\nhello\r\n").unwrap().is_none());
+    }
+
+    #[test]
+    fn test_empty_input() {
+        assert!(decode_resp3(b"").unwrap().is_none());
     }
 }
