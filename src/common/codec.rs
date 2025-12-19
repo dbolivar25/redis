@@ -1,6 +1,7 @@
 use super::resp3::{decode_resp3, encode_resp3, RESP3Value};
 use anyhow::{bail, Result};
 use bytes::{Buf, BytesMut};
+use std::time::Duration;
 use std::{fmt::Display, io};
 use tokio_util::codec::{Decoder, Encoder};
 
@@ -236,6 +237,52 @@ fn decode_psync_request(data: &[RESP3Value]) -> Result<Request> {
     }
 
     Ok(Request::PSync(data[1].clone(), data[2].clone()))
+}
+
+pub fn encode_snapshot(entries: &[(RESP3Value, RESP3Value, Option<Duration>)]) -> RESP3Value {
+    let items: Vec<RESP3Value> = entries
+        .iter()
+        .map(|(key, value, ttl)| {
+            let ttl_ms = ttl.map(|d| d.as_millis() as i64).unwrap_or(-1);
+            RESP3Value::Array(vec![
+                key.clone(),
+                value.clone(),
+                RESP3Value::Integer(ttl_ms),
+            ])
+        })
+        .collect();
+    RESP3Value::Array(items)
+}
+
+pub fn decode_snapshot(
+    data: RESP3Value,
+) -> Result<Vec<(RESP3Value, RESP3Value, Option<Duration>)>> {
+    let RESP3Value::Array(items) = data else {
+        bail!("Snapshot must be an array");
+    };
+
+    items
+        .into_iter()
+        .map(|item| {
+            let RESP3Value::Array(mut parts) = item else {
+                bail!("Snapshot entry must be an array");
+            };
+            if parts.len() != 3 {
+                bail!("Snapshot entry must have 3 elements");
+            }
+
+            let ttl_val = parts.pop().unwrap();
+            let value = parts.pop().unwrap();
+            let key = parts.pop().unwrap();
+
+            let ttl = match ttl_val {
+                RESP3Value::Integer(ms) if ms > 0 => Some(Duration::from_millis(ms as u64)),
+                _ => None,
+            };
+
+            Ok((key, value, ttl))
+        })
+        .collect()
 }
 
 #[cfg(test)]

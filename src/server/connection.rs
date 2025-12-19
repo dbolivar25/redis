@@ -1,6 +1,6 @@
 use super::{connection_manager::ConnectionManagerHandle, kv_store::KVStoreHandle};
 use crate::common::{
-    codec::{decode_request, encode_request, RESP3Codec, Request, TTL},
+    codec::{decode_request, decode_snapshot, encode_request, encode_snapshot, RESP3Codec, Request, TTL},
     resp3::RESP3Value,
 };
 use anyhow::Result;
@@ -110,21 +110,54 @@ impl Connection {
 
                     let response = self.stream.next().await;
 
-                    if let Some(Ok(RESP3Value::SimpleString(response))) = response {
-                        if response != "CONTINUE" {
-                            log::error!("Failed to PSYNC master: {:?}", response);
+                    match response {
+                        Some(Ok(RESP3Value::SimpleString(s))) if s.starts_with("FULLRESYNC") => {
+                            let parts: Vec<&str> = s.split_whitespace().collect();
+                            if parts.len() >= 3 {
+                                log::info!(
+                                    "Full sync from master: repl_id={}, offset={}",
+                                    parts[1],
+                                    parts[2]
+                                );
+                            }
+
+                            let snapshot_response = self.stream.next().await;
+                            match snapshot_response {
+                                Some(Ok(snapshot_data)) => {
+                                    match decode_snapshot(snapshot_data) {
+                                        Ok(entries) => {
+                                            log::info!("Loading {} keys from master", entries.len());
+                                            if let Err(e) = self.kv_store.load_snapshot(entries).await {
+                                                log::error!("Failed to load snapshot: {e}");
+                                                return;
+                                            }
+                                        }
+                                        Err(e) => {
+                                            log::error!("Failed to decode snapshot: {e}");
+                                            return;
+                                        }
+                                    }
+                                }
+                                other => {
+                                    log::error!("Failed to receive snapshot from master: {:?}", other);
+                                    return;
+                                }
+                            }
+                        }
+                        Some(Ok(RESP3Value::SimpleString(s))) if s == "CONTINUE" => {
+                            log::info!("Partial sync from master (CONTINUE)");
+                        }
+                        other => {
+                            log::error!("Unexpected PSYNC response: {:?}", other);
                             return;
                         }
-                    } else {
-                        log::error!("Failed to PSYNC master: {:?}", response);
-                        return;
                     }
 
-                    let _ = self
-                        .conn_manager
+                    self.conn_manager
                         .set_master(self.addr)
                         .await
-                        .inspect_err(|err| log::error!("Failed to add master: {:?}", err));
+                        .inspect_err(|err| log::error!("Failed to add master: {:?}", err))
+                        .ok();
                 }
             }
             ConnectionMessage::Shutdown => {
@@ -218,13 +251,50 @@ async fn run_connection(mut connection: Connection, on_shutdown_complete: onesho
                         }
                     }
                     Request::PSync(_repl_id, _offset) => {
-                        let _ = connection
+                        let repl_id = connection
+                            .conn_manager
+                            .get_repl_id()
+                            .await
+                            .unwrap_or_else(|_| "?".to_string());
+
+                        let current_offset = connection
+                            .kv_store
+                            .get_offset()
+                            .await
+                            .unwrap_or(0);
+
+                        let fullresync = RESP3Value::SimpleString(
+                            format!("FULLRESYNC {repl_id} {current_offset}")
+                        );
+
+                        if let Err(e) = connection.stream.send(fullresync).await {
+                            log::error!("Failed to send FULLRESYNC: {e}");
+                            continue;
+                        }
+
+                        let snapshot_data = connection
+                            .kv_store
+                            .snapshot()
+                            .await
+                            .unwrap_or_default();
+
+                        log::info!("Sending snapshot with {} keys to replica {}", 
+                                   snapshot_data.len(), connection.addr);
+
+                        let snapshot_msg = encode_snapshot(&snapshot_data);
+                        if let Err(e) = connection.stream.send(snapshot_msg).await {
+                            log::error!("Failed to send snapshot: {e}");
+                            continue;
+                        }
+
+                        connection
                             .conn_manager
                             .set_replica(connection.addr)
                             .await
-                            .inspect_err(|err| log::error!("Failed to set replica: {:?}", err));
+                            .inspect_err(|err| log::error!("Failed to set replica: {:?}", err))
+                            .ok();
 
-                        RESP3Value::SimpleString("CONTINUE".to_string())
+                        continue;
                     }
                 };
 
@@ -232,7 +302,7 @@ async fn run_connection(mut connection: Connection, on_shutdown_complete: onesho
                     continue;
                 }
 
-                log::info!("Sending response: {}", response);
+                log::info!("Sending response: {response}");
 
                 let _ = connection
                     .stream

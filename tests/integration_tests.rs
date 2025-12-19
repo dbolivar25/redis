@@ -299,3 +299,187 @@ async fn test_server_restart() {
 
     new_join_handle.abort();
 }
+
+// =============================================================================
+// Replication Tests
+// =============================================================================
+
+use redis::server::connection::ConnectionType;
+
+/// Start a replica server that connects to a master at the given address.
+/// Returns a handle to the replica server, its local address, and a oneshot receiver
+/// that signals when the replica has fully synced with the master.
+async fn start_replica(master_addr: SocketAddr) -> (JoinHandle<()>, SocketAddr) {
+    let tcp_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = tcp_listener.local_addr().unwrap();
+
+    let server = Server::new(tcp_listener);
+
+    // Connect to the master
+    let master_stream = TcpStream::connect(master_addr).await.unwrap();
+    let local_master_addr = master_stream.local_addr().unwrap();
+
+    server
+        .add_connection(master_stream, local_master_addr, ConnectionType::Master)
+        .await
+        .unwrap();
+
+    let join = tokio::spawn(async move {
+        server.run().await.unwrap();
+    });
+
+    // Give time for the replica to sync with master
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    (join, addr)
+}
+
+/// Test that a replica receives initial data from master during full sync.
+#[tokio::test]
+async fn test_replication_initial_sync() {
+    // Start master server
+    let (master_handle, master_addr) = start_server().await;
+    let mut master_client = connect_client(master_addr).await;
+
+    // Set some data on master BEFORE replica connects
+    let key1 = RESP3Value::BulkString(b"key1".to_vec());
+    let value1 = RESP3Value::BulkString(b"value1".to_vec());
+    let key2 = RESP3Value::BulkString(b"key2".to_vec());
+    let value2 = RESP3Value::BulkString(b"value2".to_vec());
+
+    let response = send_command(
+        &mut master_client,
+        Request::Set(key1.clone(), value1.clone(), None),
+    )
+    .await;
+    assert_eq!(response, RESP3Value::SimpleString("OK".to_string()));
+
+    let response = send_command(
+        &mut master_client,
+        Request::Set(key2.clone(), value2.clone(), None),
+    )
+    .await;
+    assert_eq!(response, RESP3Value::SimpleString("OK".to_string()));
+
+    // Now start the replica - it should sync the existing data
+    let (replica_handle, replica_addr) = start_replica(master_addr).await;
+    let mut replica_client = connect_client(replica_addr).await;
+
+    // Verify replica has the data from initial sync
+    let response = send_command(&mut replica_client, Request::Get(key1)).await;
+    assert_eq!(response, value1);
+
+    let response = send_command(&mut replica_client, Request::Get(key2)).await;
+    assert_eq!(response, value2);
+
+    master_handle.abort();
+    replica_handle.abort();
+}
+
+/// Test that writes on master are propagated to replica after sync.
+#[tokio::test]
+async fn test_replication_write_propagation() {
+    // Start master server
+    let (master_handle, master_addr) = start_server().await;
+    let mut master_client = connect_client(master_addr).await;
+
+    // Start replica (empty sync since master has no data)
+    let (replica_handle, replica_addr) = start_replica(master_addr).await;
+    let mut replica_client = connect_client(replica_addr).await;
+
+    // Write to master AFTER replica is connected
+    let key = RESP3Value::BulkString(b"propagated_key".to_vec());
+    let value = RESP3Value::BulkString(b"propagated_value".to_vec());
+
+    let response = send_command(
+        &mut master_client,
+        Request::Set(key.clone(), value.clone(), None),
+    )
+    .await;
+    assert_eq!(response, RESP3Value::SimpleString("OK".to_string()));
+
+    // Give time for propagation
+    tokio::time::sleep(Duration::from_millis(10)).await;
+
+    // Verify replica received the write
+    let response = send_command(&mut replica_client, Request::Get(key)).await;
+    assert_eq!(response, value);
+
+    master_handle.abort();
+    replica_handle.abort();
+}
+
+/// Test that DEL operations are propagated to replica.
+#[tokio::test]
+async fn test_replication_del_propagation() {
+    // Start master server
+    let (master_handle, master_addr) = start_server().await;
+    let mut master_client = connect_client(master_addr).await;
+
+    // Set initial data on master
+    let key = RESP3Value::BulkString(b"to_delete".to_vec());
+    let value = RESP3Value::BulkString(b"will_be_deleted".to_vec());
+
+    let response = send_command(
+        &mut master_client,
+        Request::Set(key.clone(), value.clone(), None),
+    )
+    .await;
+    assert_eq!(response, RESP3Value::SimpleString("OK".to_string()));
+
+    // Start replica - should sync the key
+    let (replica_handle, replica_addr) = start_replica(master_addr).await;
+    let mut replica_client = connect_client(replica_addr).await;
+
+    // Verify replica has the key
+    let response = send_command(&mut replica_client, Request::Get(key.clone())).await;
+    assert_eq!(response, value);
+
+    // Delete the key on master
+    let response = send_command(&mut master_client, Request::Del(key.clone())).await;
+    assert_eq!(response, RESP3Value::SimpleString("OK".to_string()));
+
+    // Give time for propagation
+    tokio::time::sleep(Duration::from_millis(10)).await;
+
+    // Verify key is deleted on replica
+    let response = send_command(&mut replica_client, Request::Get(key)).await;
+    assert_eq!(response, RESP3Value::Null);
+
+    master_handle.abort();
+    replica_handle.abort();
+}
+
+/// Test replication with TTL - key should sync with remaining TTL.
+#[tokio::test]
+async fn test_replication_with_ttl() {
+    let (master_handle, master_addr) = start_server().await;
+    let mut master_client = connect_client(master_addr).await;
+
+    let key = RESP3Value::BulkString(b"ttl_key".to_vec());
+    let value = RESP3Value::BulkString(b"ttl_value".to_vec());
+
+    let response = send_command(
+        &mut master_client,
+        Request::Set(key.clone(), value.clone(), Some(TTL::Milliseconds(500))),
+    )
+    .await;
+    assert_eq!(response, RESP3Value::SimpleString("OK".to_string()));
+
+    let (replica_handle, replica_addr) = start_replica(master_addr).await;
+    let mut replica_client = connect_client(replica_addr).await;
+
+    let response = send_command(&mut replica_client, Request::Get(key.clone())).await;
+    assert_eq!(response, value);
+
+    tokio::time::sleep(Duration::from_millis(600)).await;
+
+    let response = send_command(&mut master_client, Request::Get(key.clone())).await;
+    assert_eq!(response, RESP3Value::Null);
+
+    let response = send_command(&mut replica_client, Request::Get(key)).await;
+    assert_eq!(response, RESP3Value::Null);
+
+    master_handle.abort();
+    replica_handle.abort();
+}

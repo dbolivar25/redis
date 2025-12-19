@@ -3,7 +3,17 @@ use crate::common::codec::Request;
 use anyhow::Result;
 use futures::future;
 use std::net::SocketAddr;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::{mpsc, oneshot};
+
+fn generate_repl_id() -> String {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let pid = std::process::id();
+    format!("{nanos:032x}{pid:08x}")
+}
 
 /// ConnectionManager is responsible for managing all connections to the server.
 /// It keeps track of the master connection, client connections, and replica connections.
@@ -14,10 +24,10 @@ pub struct ConnectionManager {
     master: Option<(ConnectionHandle, oneshot::Receiver<()>)>,
     clients: Vec<(ConnectionHandle, oneshot::Receiver<()>)>,
     replicas: Vec<(ConnectionHandle, oneshot::Receiver<()>)>,
+    repl_id: String,
 }
 
 /// ConnectionManagerMessage is an enum that represents the different types of messages that can be sent to the ConnectionManager.
-#[derive(Debug)]
 pub enum ConnectionManagerMessage {
     AddClient {
         connection: ConnectionHandle,
@@ -35,6 +45,9 @@ pub enum ConnectionManagerMessage {
     Broadcast {
         request: Request,
     },
+    GetReplId {
+        respond_to: oneshot::Sender<String>,
+    },
     Shutdown,
 }
 
@@ -48,12 +61,14 @@ impl ConnectionManager {
         master: Option<(ConnectionHandle, oneshot::Receiver<()>)>,
         clients: Vec<(ConnectionHandle, oneshot::Receiver<()>)>,
         replicas: Vec<(ConnectionHandle, oneshot::Receiver<()>)>,
+        repl_id: String,
     ) -> Self {
         ConnectionManager {
             receiver,
             master,
             clients,
             replicas,
+            repl_id,
         }
     }
 
@@ -107,6 +122,9 @@ impl ConnectionManager {
                         log::warn!("Replica {} lagging, failed to forward: {e}", replica.addr);
                     }
                 }
+            }
+            ConnectionManagerMessage::GetReplId { respond_to } => {
+                respond_to.send(self.repl_id.clone()).ok();
             }
             ConnectionManagerMessage::Shutdown => {
                 let client_shutdowns =
@@ -183,7 +201,9 @@ impl ConnectionManagerHandle {
         let (sender, receiver) = mpsc::channel(128);
         let (on_shutdown_complete, shutdown_complete) = oneshot::channel();
 
-        let connection_manager = ConnectionManager::new(receiver, None, vec![], vec![]);
+        let repl_id = generate_repl_id();
+        log::info!("Generated replication ID: {}", repl_id);
+        let connection_manager = ConnectionManager::new(receiver, None, vec![], vec![], repl_id);
         tokio::spawn(run_connection_manager(
             connection_manager,
             on_shutdown_complete,
@@ -226,14 +246,19 @@ impl ConnectionManagerHandle {
         Ok(())
     }
 
-    /// Broadcasts a request to all replica connections.
     pub async fn broadcast(&self, request: Request) -> Result<()> {
         let msg = ConnectionManagerMessage::Broadcast { request };
         self.sender.send(msg).await?;
         Ok(())
     }
 
-    /// Shuts down the ConnectionManager.
+    pub async fn get_repl_id(&self) -> Result<String> {
+        let (respond_to, response) = oneshot::channel();
+        let msg = ConnectionManagerMessage::GetReplId { respond_to };
+        self.sender.send(msg).await?;
+        response.await.map_err(Into::into)
+    }
+
     pub async fn shutdown(&self) -> Result<()> {
         let msg = ConnectionManagerMessage::Shutdown;
         self.sender.send(msg).await?;

@@ -1,8 +1,11 @@
 use crate::common::resp3::RESP3Value;
 use anyhow::Result;
 use std::collections::HashMap;
+use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
-use tokio::time::{interval_at, Duration, Instant, Interval};
+use tokio::time::{interval_at, Instant, Interval};
+
+pub type SnapshotEntry = (RESP3Value, RESP3Value, Option<Duration>);
 
 /// A key-value store that supports setting, getting, and deleting key-value pairs.
 /// Each key-value pair can have an optional expiration time.
@@ -11,13 +14,13 @@ pub struct KVStore {
     receiver: mpsc::Receiver<KVStoreMessage>,
     active_expiration_interval: Interval,
     kv_store: HashMap<Key, Value>,
+    offset: u64,
 }
 
 type Key = RESP3Value;
 type Value = (RESP3Value, Option<Instant>);
 
 /// Messages that can be sent to the KVStore.
-#[derive(Debug)]
 pub enum KVStoreMessage {
     Set {
         key: Key,
@@ -29,6 +32,12 @@ pub enum KVStoreMessage {
     },
     Del {
         key: Key,
+    },
+    GetOffset {
+        respond_to: oneshot::Sender<u64>,
+    },
+    Snapshot {
+        respond_to: oneshot::Sender<Vec<SnapshotEntry>>,
     },
     Shutdown,
 }
@@ -44,6 +53,7 @@ impl KVStore {
             receiver,
             active_expiration_interval,
             kv_store,
+            offset: 0,
         }
     }
 
@@ -51,7 +61,8 @@ impl KVStore {
     fn handle_message(&mut self, msg: KVStoreMessage) {
         match msg {
             KVStoreMessage::Set { key, value } => {
-                let _ = self.kv_store.insert(key, value);
+                self.kv_store.insert(key, value);
+                self.offset += 1;
             }
             KVStoreMessage::Get { key, respond_to } => match self.kv_store.get(&key).cloned() {
                 Some((_value, Some(expiry))) if expiry < Instant::now() => {
@@ -68,7 +79,28 @@ impl KVStore {
                 }
             },
             KVStoreMessage::Del { key } => {
-                let _ = self.kv_store.remove(&key);
+                self.kv_store.remove(&key);
+                self.offset += 1;
+            }
+            KVStoreMessage::GetOffset { respond_to } => {
+                respond_to.send(self.offset).ok();
+            }
+            KVStoreMessage::Snapshot { respond_to } => {
+                let now = Instant::now();
+                let snapshot: Vec<SnapshotEntry> = self
+                    .kv_store
+                    .iter()
+                    .filter_map(|(key, (value, expiry))| {
+                        if let Some(exp) = expiry {
+                            if *exp <= now {
+                                return None;
+                            }
+                        }
+                        let remaining_ttl = expiry.map(|e| e.saturating_duration_since(now));
+                        Some((key.clone(), value.clone(), remaining_ttl))
+                    })
+                    .collect();
+                respond_to.send(snapshot).ok();
             }
             KVStoreMessage::Shutdown => {
                 self.receiver.close();
@@ -152,14 +184,34 @@ impl KVStoreHandle {
         response.await.map_err(Into::into)
     }
 
-    /// Delete a key from the KVStore.
     pub async fn del(&self, key: Key) -> Result<()> {
         let msg = KVStoreMessage::Del { key };
         self.sender.send(msg).await?;
         Ok(())
     }
 
-    /// Shut down the KVStore.
+    pub async fn get_offset(&self) -> Result<u64> {
+        let (respond_to, response) = oneshot::channel();
+        let msg = KVStoreMessage::GetOffset { respond_to };
+        self.sender.send(msg).await?;
+        response.await.map_err(Into::into)
+    }
+
+    pub async fn snapshot(&self) -> Result<Vec<SnapshotEntry>> {
+        let (respond_to, response) = oneshot::channel();
+        let msg = KVStoreMessage::Snapshot { respond_to };
+        self.sender.send(msg).await?;
+        response.await.map_err(Into::into)
+    }
+
+    pub async fn load_snapshot(&self, entries: Vec<SnapshotEntry>) -> Result<()> {
+        for (key, value, ttl) in entries {
+            let expiration = ttl.map(|d| Instant::now() + d);
+            self.set(key, value, expiration).await?;
+        }
+        Ok(())
+    }
+
     pub async fn shutdown(&self) -> Result<()> {
         let msg = KVStoreMessage::Shutdown;
         self.sender.send(msg).await?;
