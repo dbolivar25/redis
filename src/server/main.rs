@@ -37,7 +37,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     log4rs::init_config(config).expect("that log4rs config will not fail.");
 
-    let tcp_listener = TcpListener::bind(format!("{}:{}", host, port)).await?;
+    let tcp_listener = TcpListener::bind(format!("{host}:{port}")).await?;
 
     let server = Server::new(tcp_listener);
 

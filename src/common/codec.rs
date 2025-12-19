@@ -28,15 +28,15 @@ impl Display for Request {
         match self {
             // Request::Hello => write!(f, "HELLO"),
             Request::Ping => write!(f, "PING"),
-            Request::Echo(value) => write!(f, "ECHO {}", value),
+            Request::Echo(value) => write!(f, "ECHO {value}"),
             Request::Set(key, value, ttl) => match ttl {
-                Some(TTL::Milliseconds(ms)) => write!(f, "SET {} {} PX {}", key, value, ms),
-                Some(TTL::Seconds(s)) => write!(f, "SET {} {} EX {}", key, value, s),
-                None => write!(f, "SET {} {}", key, value),
+                Some(TTL::Milliseconds(ms)) => write!(f, "SET {key} {value} PX {ms}"),
+                Some(TTL::Seconds(s)) => write!(f, "SET {key} {value} EX {s}"),
+                None => write!(f, "SET {key} {value}"),
             },
-            Request::Get(key) => write!(f, "GET {}", key),
-            Request::Del(key) => write!(f, "DEL {}", key),
-            Request::PSync(repl_id, offset) => write!(f, "PSYNC {} {}", repl_id, offset),
+            Request::Get(key) => write!(f, "GET {key}"),
+            Request::Del(key) => write!(f, "DEL {key}"),
+            Request::PSync(repl_id, offset) => write!(f, "PSYNC {repl_id} {offset}"),
         }
     }
 }
@@ -47,10 +47,9 @@ pub struct RESP3Codec;
 impl Encoder<RESP3Value> for RESP3Codec {
     type Error = io::Error;
 
-    /// Encodes a RESP3 value into a byte buffer.
     fn encode(&mut self, item: RESP3Value, dst: &mut BytesMut) -> Result<(), Self::Error> {
         let encoded = encode_resp3(&item);
-        dst.extend_from_slice(encoded.as_bytes());
+        dst.extend_from_slice(&encoded);
         Ok(())
     }
 }

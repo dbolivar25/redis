@@ -16,36 +16,50 @@ pub enum RESP3Value {
 impl Display for RESP3Value {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            RESP3Value::SimpleString(s) => write!(f, "\"{}\"", s),
-            RESP3Value::SimpleError(s) => write!(f, "Error: \"{}\"", s),
-            RESP3Value::Integer(n) => write!(f, "{}", n),
+            RESP3Value::SimpleString(s) => write!(f, "\"{s}\""),
+            RESP3Value::SimpleError(s) => write!(f, "Error: \"{s}\""),
+            RESP3Value::Integer(n) => write!(f, "{n}"),
             RESP3Value::BulkString(data) => write!(f, "\"{}\"", data.escape_ascii()),
             RESP3Value::Array(data) => {
                 let values = data.iter().map(|v| v.to_string()).join(", ");
-                write!(f, "[{}]", values)
+                write!(f, "[{values}]")
             }
             RESP3Value::Null => write!(f, "Null"),
         }
     }
 }
 
-/// Encodes a RESP3 value into a RESP3 string.
-pub fn encode_resp3(value: &RESP3Value) -> String {
+/// Encodes a RESP3 value into a byte vector.
+/// Returns raw bytes to properly handle binary-safe bulk strings.
+#[must_use]
+pub fn encode_resp3(value: &RESP3Value) -> Vec<u8> {
     match value {
-        RESP3Value::SimpleString(s) => format!("+{}\r\n", s),
-        RESP3Value::SimpleError(s) => format!("-{}\r\n", s),
-        RESP3Value::Integer(n) => format!(":{}\r\n", n),
-        RESP3Value::BulkString(data) => format!(
-            "${}\r\n{}\r\n",
-            data.len(),
-            data.iter().map(|&b| b as char).collect::<String>()
-        ),
-        RESP3Value::Array(data) => format!(
-            "*{}\r\n{}",
-            data.len(),
-            data.iter().map(encode_resp3).collect::<String>()
-        ),
-        RESP3Value::Null => "_\r\n".to_string(),
+        RESP3Value::SimpleString(s) => format!("+{s}\r\n").into_bytes(),
+        RESP3Value::SimpleError(s) => format!("-{s}\r\n").into_bytes(),
+        RESP3Value::Integer(n) => format!(":{n}\r\n").into_bytes(),
+        RESP3Value::BulkString(data) => {
+            let len_str = data.len().to_string();
+            let capacity = 1 + len_str.len() + 2 + data.len() + 2;
+            let mut out = Vec::with_capacity(capacity);
+            out.push(b'$');
+            out.extend_from_slice(len_str.as_bytes());
+            out.extend_from_slice(b"\r\n");
+            out.extend_from_slice(data);
+            out.extend_from_slice(b"\r\n");
+            out
+        }
+        RESP3Value::Array(data) => {
+            let len_str = data.len().to_string();
+            let mut out = Vec::with_capacity(1 + len_str.len() + 2);
+            out.push(b'*');
+            out.extend_from_slice(len_str.as_bytes());
+            out.extend_from_slice(b"\r\n");
+            for item in data {
+                out.extend(encode_resp3(item));
+            }
+            out
+        }
+        RESP3Value::Null => b"_\r\n".to_vec(),
     }
 }
 
@@ -173,8 +187,7 @@ mod tests {
         assert!(rest.is_empty());
 
         let encoded = encode_resp3(&value);
-        let expected = String::from_utf8_lossy(input);
-        assert_eq!(encoded, expected);
+        assert_eq!(encoded.as_slice(), input.as_slice());
     }
 
     #[test]
@@ -185,8 +198,7 @@ mod tests {
         assert!(rest.is_empty());
 
         let encoded = encode_resp3(&value);
-        let expected = String::from_utf8_lossy(input);
-        assert_eq!(encoded, expected);
+        assert_eq!(encoded.as_slice(), input.as_slice());
     }
 
     #[test]
@@ -197,8 +209,7 @@ mod tests {
         assert!(rest.is_empty());
 
         let encoded = encode_resp3(&value);
-        let expected = String::from_utf8_lossy(input);
-        assert_eq!(encoded, expected);
+        assert_eq!(encoded.as_slice(), input.as_slice());
     }
 
     #[test]
@@ -209,8 +220,7 @@ mod tests {
         assert!(rest.is_empty());
 
         let encoded = encode_resp3(&value);
-        let expected = String::from_utf8_lossy(input);
-        assert_eq!(encoded, expected);
+        assert_eq!(encoded.as_slice(), input.as_slice());
     }
 
     #[test]
@@ -221,8 +231,7 @@ mod tests {
         assert!(rest.is_empty());
 
         let encoded = encode_resp3(&value);
-        let expected = String::from_utf8_lossy(input);
-        assert_eq!(encoded, expected);
+        assert_eq!(encoded.as_slice(), input.as_slice());
     }
 
     #[test]
@@ -239,7 +248,6 @@ mod tests {
         assert!(rest.is_empty());
 
         let encoded = encode_resp3(&value);
-        let expected = String::from_utf8_lossy(input);
-        assert_eq!(encoded, expected);
+        assert_eq!(encoded.as_slice(), input.as_slice());
     }
 }

@@ -79,7 +79,7 @@ impl KVStore {
     /// Remove all expired key-value pairs.
     fn remove_expired(&mut self, instant: Instant) {
         self.kv_store
-            .retain(|_, (_, expiry)| expiry.map_or(true, |expiry| expiry > instant));
+            .retain(|_, (_, expiry)| expiry.is_none_or(|expiry| expiry > instant));
     }
 }
 
@@ -117,7 +117,7 @@ pub struct KVStoreHandle {
 impl KVStoreHandle {
     /// Create a new KVStoreHandle and a oneshot receiver that will be signalled when the KVStore is shut down.
     pub fn new() -> (Self, oneshot::Receiver<()>) {
-        let (sender, receiver) = mpsc::channel(32);
+        let (sender, receiver) = mpsc::channel(128);
         let (on_shutdown_complete, shutdown_complete) = oneshot::channel();
         let active_expiration_interval_period = Duration::from_millis(200);
         let active_expiration_interval = interval_at(

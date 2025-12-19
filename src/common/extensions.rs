@@ -96,7 +96,7 @@ mod tests {
     fn test_ensure_or_else() {
         let result = Ok(42);
         let predicate = |value: &i32| *value == 42;
-        let error = |value: &i32| format!("Value is not 42, but {}", value);
+        let error = |value: &i32| format!("Value is not 42, but {value}");
 
         assert_eq!(result.ensure_or_else(predicate, error), Ok(42));
 

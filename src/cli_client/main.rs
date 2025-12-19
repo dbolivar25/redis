@@ -18,7 +18,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         command,
     } = Args::parse();
 
-    let addr = format!("{}:{}", host, port);
+    let addr = format!("{host}:{port}");
 
     let tcp = TcpStream::connect(addr).await?;
     let (mut sink, mut stream) = Framed::new(tcp, RESP3Codec).split();
@@ -50,7 +50,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     if let Some(Ok(response)) = response {
         let time = start.elapsed();
-        println!("{} in {:?}", response, time);
+        println!("{response} in {time:?}");
     } else {
         eprintln!("Failed to receive response");
     }

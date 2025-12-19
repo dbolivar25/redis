@@ -127,7 +127,7 @@ impl Connection {
                         .inspect_err(|err| log::error!("Failed to add master: {:?}", err));
                 }
             }
-            ConnectionMessage::Shutdown {} => {
+            ConnectionMessage::Shutdown => {
                 self.receiver.close();
             }
         }
@@ -269,7 +269,7 @@ impl ConnectionHandle {
         kv_store: KVStoreHandle,
         conn_manager: ConnectionManagerHandle,
     ) -> (Self, oneshot::Receiver<()>) {
-        let (sender, receiver) = mpsc::channel(16);
+        let (sender, receiver) = mpsc::channel(128);
         let (on_shutdown_complete, shutdown_complete) = oneshot::channel();
 
         let connection = Connection::new(receiver, stream, addr, kv_store, conn_manager);
@@ -277,12 +277,15 @@ impl ConnectionHandle {
         (ConnectionHandle { addr, sender }, shutdown_complete)
     }
 
-    /// Forwards a request to the connection actor. This is used to send requests from the master to
-    /// the replica.
     pub async fn forward_request(&self, request: Request) -> Result<()> {
         let msg = ConnectionMessage::ForwardRequest { request };
         self.sender.send(msg).await?;
         Ok(())
+    }
+
+    pub fn try_forward_request(&self, request: Request) -> Result<(), tokio::sync::mpsc::error::TrySendError<ConnectionMessage>> {
+        let msg = ConnectionMessage::ForwardRequest { request };
+        self.sender.try_send(msg)
     }
 
     /// Sets the connection type of the connection actor. This is used to set the connection type of

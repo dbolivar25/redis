@@ -63,7 +63,7 @@ impl Highlighter for RedisTUIHelper {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     let Args { host, port } = Args::parse();
-    let addr = format!("{}:{}", host, port);
+    let addr = format!("{host}:{port}");
     let tcp = TcpStream::connect(addr).await?;
     let (mut sink, mut stream) = Framed::new(tcp, RESP3Codec).split();
 
@@ -196,7 +196,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
                 if let Some(Ok(response)) = response {
                     let time = start.elapsed();
-                    println!("{} in {:?}", response, time);
+                    println!("{response} in {time:?}");
                 } else {
                     eprintln!("Failed to receive response");
                 }
@@ -208,7 +208,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 break;
             }
             Err(err) => {
-                println!("Error: {:?}", err);
+                println!("Error: {err:?}");
                 break;
             }
         }

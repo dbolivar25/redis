@@ -102,12 +102,11 @@ impl ConnectionManager {
                 }
             }
             ConnectionManagerMessage::Broadcast { request } => {
-                future::join_all(
-                    self.replicas
-                        .iter()
-                        .map(|(replica, _)| replica.forward_request(request.clone())),
-                )
-                .await;
+                for (replica, _) in &self.replicas {
+                    if let Err(e) = replica.try_forward_request(request.clone()) {
+                        log::warn!("Replica {} lagging, failed to forward: {e}", replica.addr);
+                    }
+                }
             }
             ConnectionManagerMessage::Shutdown => {
                 let client_shutdowns =
@@ -181,7 +180,7 @@ pub struct ConnectionManagerHandle {
 impl ConnectionManagerHandle {
     /// Creates a new ConnectionManagerHandle and a oneshot receiver that can be used to wait for the ConnectionManager to shut down.
     pub fn new() -> (Self, oneshot::Receiver<()>) {
-        let (sender, receiver) = mpsc::channel(32);
+        let (sender, receiver) = mpsc::channel(128);
         let (on_shutdown_complete, shutdown_complete) = oneshot::channel();
 
         let connection_manager = ConnectionManager::new(receiver, None, vec![], vec![]);
