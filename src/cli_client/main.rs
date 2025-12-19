@@ -39,6 +39,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Commands::Get { key } => Request::Get(RESP3Value::BulkString(key.into_bytes())),
         Commands::Del { key } => Request::Del(RESP3Value::BulkString(key.into_bytes())),
+        Commands::Psync { repl_id, offset } => Request::PSync(
+            RESP3Value::BulkString(repl_id.into_bytes()),
+            RESP3Value::BulkString(offset.into_bytes()),
+        ),
     };
 
     let request = encode_request(&request);
@@ -51,6 +55,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(Ok(response)) = response {
         let time = start.elapsed();
         println!("{response} in {time:?}");
+
+        if let RESP3Value::SimpleString(s) = &response {
+            if s.starts_with("FULLRESYNC") || s == "CONTINUE" {
+                println!("Receiving replication data...");
+                while let Ok(Some(data)) = tokio::time::timeout(
+                    std::time::Duration::from_millis(500),
+                    stream.next()
+                ).await {
+                    if let Ok(d) = data {
+                        println!("  {d}");
+                    }
+                }
+            }
+        }
     } else {
         eprintln!("Failed to receive response");
     }

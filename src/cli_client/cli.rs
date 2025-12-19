@@ -51,6 +51,15 @@ pub enum Commands {
         /// The key to delete
         key: String,
     },
+
+    /// Send PSYNC command (for testing replication)
+    Psync {
+        /// Replication ID (use "?" for new replica)
+        repl_id: String,
+        /// Offset (use "-1" for full sync)
+        #[clap(allow_hyphen_values = true)]
+        offset: String,
+    },
 }
 
 /// Time-to-live options for SET command
