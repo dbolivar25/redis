@@ -707,6 +707,7 @@ impl KVStoreHandle {
     }
 
     pub async fn load_snapshot(&self, entries: Vec<SnapshotEntry>) -> Result<()> {
+        self.flushdb().await?;
         for (key, value, ttl) in entries {
             let expiration = ttl.map(|d| Instant::now() + d);
             self.set(key, value, expiration).await?;
@@ -901,6 +902,28 @@ async fn test_multiple_sets() {
 
     assert_eq!(result1, Some(value1));
     assert_eq!(result2, Some(value2));
+
+    kv_store.shutdown().await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_load_snapshot_replaces_existing_data() {
+    let (kv_store, _) = KVStoreHandle::new();
+    let stale_key = RESP3Value::BulkString(b"stale".to_vec());
+    let fresh_key = RESP3Value::BulkString(b"fresh".to_vec());
+    let fresh_value = RESP3Value::BulkString(b"value".to_vec());
+
+    kv_store
+        .set(stale_key.clone(), RESP3Value::Integer(1), None)
+        .await
+        .unwrap();
+    kv_store
+        .load_snapshot(vec![(fresh_key.clone(), fresh_value.clone(), None)])
+        .await
+        .unwrap();
+
+    assert_eq!(kv_store.get(stale_key).await.unwrap(), None);
+    assert_eq!(kv_store.get(fresh_key).await.unwrap(), Some(fresh_value));
 
     kv_store.shutdown().await.unwrap();
 }

@@ -4,9 +4,9 @@ use log4rs::{
     config::{Appender, Root},
     Config,
 };
-use redis::server::{cli::Args, connection::ConnectionType, server::Server};
+use redis::server::{cli::Args, server::Server};
 use std::error::Error;
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::TcpListener;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
@@ -42,12 +42,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let server = Server::new(tcp_listener);
 
     if let Some(master) = master {
-        let master_stream = TcpStream::connect(master).await?;
-        let master_addr = master_stream.local_addr()?;
-
-        server
-            .add_connection(master_stream, master_addr, ConnectionType::Master)
-            .await?;
+        server.spawn_master_replication(master);
     }
 
     server.run().await?;

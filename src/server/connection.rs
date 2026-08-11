@@ -5,7 +5,14 @@ use crate::common::{
 };
 use anyhow::Result;
 use futures::{SinkExt, StreamExt};
-use std::{net::SocketAddr, time::Duration};
+use std::{
+    net::SocketAddr,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, Mutex,
+    },
+    time::Duration,
+};
 use tokio::{
     net::TcpStream,
     sync::{mpsc, oneshot},
@@ -13,10 +20,28 @@ use tokio::{
 };
 use tokio_util::codec::Framed;
 
-/// Represents a connection to a client, master, or replica.
-/// The connection is bidirectional, with the server sending responses to the client
-/// and the client sending requests to the server. This struct is implemented as an actor which has
-/// a cooresponding handle struct that can be used to send messages to the actor.
+/// Shared state for replica-to-master connections that persists across reconnects.
+/// This allows partial resync (PSYNC) to work after a disconnect.
+pub struct ReplicaState {
+    master_repl_id: Mutex<Option<String>>,
+    offset: AtomicU64,
+}
+
+impl ReplicaState {
+    pub fn new() -> Self {
+        Self {
+            master_repl_id: Mutex::new(None),
+            offset: AtomicU64::new(0),
+        }
+    }
+}
+
+impl Default for ReplicaState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 pub struct Connection {
     receiver: mpsc::Receiver<ConnectionMessage>,
     stream: Framed<TcpStream, RESP3Codec>,
@@ -26,6 +51,7 @@ pub struct Connection {
     conn_manager: ConnectionManagerHandle,
     master_repl_id: Option<String>,
     replica_offset: u64,
+    replica_state: Option<Arc<ReplicaState>>,
 }
 
 /// Represents the type of connection.
@@ -45,7 +71,6 @@ pub enum ConnectionMessage {
 }
 
 impl Connection {
-    /// Creates a new connection actor.
     pub fn new(
         receiver: mpsc::Receiver<ConnectionMessage>,
         stream: Framed<TcpStream, RESP3Codec>,
@@ -53,17 +78,79 @@ impl Connection {
         kv_store: KVStoreHandle,
         conn_manager: ConnectionManagerHandle,
     ) -> Self {
-        let conn_type = ConnectionType::Client;
-
         Connection {
             receiver,
             stream,
-            conn_type,
+            conn_type: ConnectionType::Client,
             addr,
             kv_store,
             conn_manager,
             master_repl_id: None,
             replica_offset: 0,
+            replica_state: None,
+        }
+    }
+
+    pub fn new_with_replica_state(
+        receiver: mpsc::Receiver<ConnectionMessage>,
+        stream: Framed<TcpStream, RESP3Codec>,
+        addr: SocketAddr,
+        kv_store: KVStoreHandle,
+        conn_manager: ConnectionManagerHandle,
+        replica_state: Arc<ReplicaState>,
+    ) -> Self {
+        Connection {
+            receiver,
+            stream,
+            conn_type: ConnectionType::Client,
+            addr,
+            kv_store,
+            conn_manager,
+            master_repl_id: None,
+            replica_offset: 0,
+            replica_state: Some(replica_state),
+        }
+    }
+
+    fn get_repl_info(&self) -> (String, String) {
+        if let Some(ref state) = self.replica_state {
+            let repl_id = state
+                .master_repl_id
+                .lock()
+                .ok()
+                .and_then(|guard| guard.clone())
+                .unwrap_or_else(|| "?".to_string());
+            let offset = if repl_id == "?" {
+                "-1".to_string()
+            } else {
+                state.offset.load(Ordering::SeqCst).to_string()
+            };
+            (repl_id, offset)
+        } else {
+            match &self.master_repl_id {
+                Some(id) => (id.clone(), self.replica_offset.to_string()),
+                None => ("?".to_string(), "-1".to_string()),
+            }
+        }
+    }
+
+    fn set_repl_info(&mut self, repl_id: String, offset: u64) {
+        if let Some(ref state) = self.replica_state {
+            if let Ok(mut guard) = state.master_repl_id.lock() {
+                *guard = Some(repl_id);
+            }
+            state.offset.store(offset, Ordering::SeqCst);
+        } else {
+            self.master_repl_id = Some(repl_id);
+            self.replica_offset = offset;
+        }
+    }
+
+    fn increment_offset(&mut self) {
+        if let Some(ref state) = self.replica_state {
+            state.offset.fetch_add(1, Ordering::SeqCst);
+        } else {
+            self.replica_offset += 1;
         }
     }
 
@@ -102,17 +189,16 @@ impl Connection {
                     if let Some(Ok(RESP3Value::SimpleString(response))) = response {
                         if response != "PONG" {
                             log::error!("Failed to PING master: {:?}", response);
+                            self.receiver.close();
                             return;
                         }
                     } else {
                         log::error!("Failed to PING master: {:?}", response);
+                        self.receiver.close();
                         return;
                     }
 
-                    let (repl_id, offset) = match &self.master_repl_id {
-                        Some(id) => (id.clone(), self.replica_offset.to_string()),
-                        None => ("?".to_string(), "-1".to_string()),
-                    };
+                    let (repl_id, offset) = self.get_repl_info();
 
                     log::info!("Sending PSYNC {} {}", repl_id, offset);
 
@@ -136,8 +222,10 @@ impl Connection {
                                     parts[1],
                                     parts[2]
                                 );
-                                self.master_repl_id = Some(parts[1].to_string());
-                                self.replica_offset = parts[2].parse().unwrap_or(0);
+                                self.set_repl_info(
+                                    parts[1].to_string(),
+                                    parts[2].parse().unwrap_or(0),
+                                );
                             }
 
                             let snapshot_response = self.stream.next().await;
@@ -148,17 +236,20 @@ impl Connection {
                                             log::info!("Loading {} keys from master", entries.len());
                                             if let Err(e) = self.kv_store.load_snapshot(entries).await {
                                                 log::error!("Failed to load snapshot: {e}");
+                                                self.receiver.close();
                                                 return;
                                             }
                                         }
                                         Err(e) => {
                                             log::error!("Failed to decode snapshot: {e}");
+                                            self.receiver.close();
                                             return;
                                         }
                                     }
                                 }
                                 other => {
                                     log::error!("Failed to receive snapshot from master: {:?}", other);
+                                    self.receiver.close();
                                     return;
                                 }
                             }
@@ -168,6 +259,7 @@ impl Connection {
                         }
                         other => {
                             log::error!("Unexpected PSYNC response: {:?}", other);
+                            self.receiver.close();
                             return;
                         }
                     }
@@ -237,7 +329,7 @@ async fn run_connection(mut connection: Connection, on_shutdown_complete: onesho
                         let (_broadcast_result, set_result) = tokio::join!(broadcast_future, set_future);
 
                         if is_from_master {
-                            connection.replica_offset += 1;
+                            connection.increment_offset();
                         }
 
                         match set_result {
@@ -268,7 +360,7 @@ async fn run_connection(mut connection: Connection, on_shutdown_complete: onesho
                         let (_broadcast_res, del_res) = tokio::join!(broadcast_future, del_future);
 
                         if is_from_master {
-                            connection.replica_offset += 1;
+                            connection.increment_offset();
                         }
 
                         match del_res {
@@ -385,7 +477,7 @@ async fn run_connection(mut connection: Connection, on_shutdown_complete: onesho
                         let (_broadcast_res, incr_res) = tokio::join!(broadcast_future, incr_future);
 
                         if is_from_master {
-                            connection.replica_offset += 1;
+                            connection.increment_offset();
                         }
 
                         match incr_res {
@@ -406,7 +498,7 @@ async fn run_connection(mut connection: Connection, on_shutdown_complete: onesho
                         let (_broadcast_res, decr_res) = tokio::join!(broadcast_future, decr_future);
 
                         if is_from_master {
-                            connection.replica_offset += 1;
+                            connection.increment_offset();
                         }
 
                         match decr_res {
@@ -427,7 +519,7 @@ async fn run_connection(mut connection: Connection, on_shutdown_complete: onesho
                         let (_broadcast_res, incr_res) = tokio::join!(broadcast_future, incr_future);
 
                         if is_from_master {
-                            connection.replica_offset += 1;
+                            connection.increment_offset();
                         }
 
                         match incr_res {
@@ -448,7 +540,7 @@ async fn run_connection(mut connection: Connection, on_shutdown_complete: onesho
                         let (_broadcast_res, decr_res) = tokio::join!(broadcast_future, decr_future);
 
                         if is_from_master {
-                            connection.replica_offset += 1;
+                            connection.increment_offset();
                         }
 
                         match decr_res {
@@ -475,7 +567,7 @@ async fn run_connection(mut connection: Connection, on_shutdown_complete: onesho
                         let (_broadcast_res, append_res) = tokio::join!(broadcast_future, append_future);
 
                         if is_from_master {
-                            connection.replica_offset += 1;
+                            connection.increment_offset();
                         }
 
                         match append_res {
@@ -528,7 +620,7 @@ async fn run_connection(mut connection: Connection, on_shutdown_complete: onesho
                         let (_broadcast_res, rename_res) = tokio::join!(broadcast_future, rename_future);
 
                         if is_from_master {
-                            connection.replica_offset += 1;
+                            connection.increment_offset();
                         }
 
                         match rename_res {
@@ -560,7 +652,7 @@ async fn run_connection(mut connection: Connection, on_shutdown_complete: onesho
                         let (_broadcast_res, expire_res) = tokio::join!(broadcast_future, expire_future);
 
                         if is_from_master {
-                            connection.replica_offset += 1;
+                            connection.increment_offset();
                         }
 
                         match expire_res {
@@ -583,7 +675,7 @@ async fn run_connection(mut connection: Connection, on_shutdown_complete: onesho
                         let (_broadcast_res, expire_res) = tokio::join!(broadcast_future, expire_future);
 
                         if is_from_master {
-                            connection.replica_offset += 1;
+                            connection.increment_offset();
                         }
 
                         match expire_res {
@@ -611,7 +703,7 @@ async fn run_connection(mut connection: Connection, on_shutdown_complete: onesho
                         let (_broadcast_res, expire_res) = tokio::join!(broadcast_future, expire_future);
 
                         if is_from_master {
-                            connection.replica_offset += 1;
+                            connection.increment_offset();
                         }
 
                         match expire_res {
@@ -654,7 +746,7 @@ async fn run_connection(mut connection: Connection, on_shutdown_complete: onesho
                         let (_broadcast_res, persist_res) = tokio::join!(broadcast_future, persist_future);
 
                         if is_from_master {
-                            connection.replica_offset += 1;
+                            connection.increment_offset();
                         }
 
                         match persist_res {
@@ -690,7 +782,7 @@ async fn run_connection(mut connection: Connection, on_shutdown_complete: onesho
                         let (_broadcast_res, mset_res) = tokio::join!(broadcast_future, mset_future);
 
                         if is_from_master {
-                            connection.replica_offset += 1;
+                            connection.increment_offset();
                         }
 
                         match mset_res {
@@ -719,7 +811,7 @@ async fn run_connection(mut connection: Connection, on_shutdown_complete: onesho
                         let (_broadcast_res, flush_res) = tokio::join!(broadcast_future, flush_future);
 
                         if is_from_master {
-                            connection.replica_offset += 1;
+                            connection.increment_offset();
                         }
 
                         match flush_res {
@@ -764,9 +856,6 @@ pub struct ConnectionHandle {
 }
 
 impl ConnectionHandle {
-    /// Creates a new connection handle and starts the connection actor.
-    /// Returns a tuple containing the handle and a oneshot receiver that will be signalled when the
-    /// connection actor has shutdown.
     pub fn new(
         stream: Framed<TcpStream, RESP3Codec>,
         addr: SocketAddr,
@@ -777,6 +866,28 @@ impl ConnectionHandle {
         let (on_shutdown_complete, shutdown_complete) = oneshot::channel();
 
         let connection = Connection::new(receiver, stream, addr, kv_store, conn_manager);
+        tokio::spawn(run_connection(connection, on_shutdown_complete));
+        (ConnectionHandle { addr, sender }, shutdown_complete)
+    }
+
+    pub fn new_replica(
+        stream: Framed<TcpStream, RESP3Codec>,
+        addr: SocketAddr,
+        kv_store: KVStoreHandle,
+        conn_manager: ConnectionManagerHandle,
+        replica_state: Arc<ReplicaState>,
+    ) -> (Self, oneshot::Receiver<()>) {
+        let (sender, receiver) = mpsc::channel(1024);
+        let (on_shutdown_complete, shutdown_complete) = oneshot::channel();
+
+        let connection = Connection::new_with_replica_state(
+            receiver,
+            stream,
+            addr,
+            kv_store,
+            conn_manager,
+            replica_state,
+        );
         tokio::spawn(run_connection(connection, on_shutdown_complete));
         (ConnectionHandle { addr, sender }, shutdown_complete)
     }

@@ -1,9 +1,10 @@
 use super::{
-    connection::ConnectionHandle, connection_manager::ConnectionManagerHandle,
+    connection::{ConnectionHandle, ReplicaState},
+    connection_manager::ConnectionManagerHandle,
     kv_store::KVStoreHandle,
 };
 use crate::{common::codec::RESP3Codec, server::connection::ConnectionType};
-use std::{error::Error, net::SocketAddr};
+use std::{error::Error, net::SocketAddr, sync::Arc, time::Duration};
 use tokio::{
     net::{TcpListener, TcpStream},
     sync::oneshot,
@@ -99,9 +100,6 @@ impl Server {
         Ok(())
     }
 
-    /// Add a new connection to the server. This function will create a new connection handle and
-    /// add it to the connection manager. The connection handle will manage the lifecycle of the
-    /// connection.
     pub async fn add_connection(
         &self,
         stream: TcpStream,
@@ -128,5 +126,53 @@ impl Server {
             .inspect_err(|err| log::error!("Failed to add client: {:?}", err))?;
 
         Ok(())
+    }
+
+    pub fn spawn_master_replication(&self, master_addr: String) {
+        let kv_store = self.kv_store.clone();
+        let conn_manager = self.conn_manager.clone();
+
+        tokio::spawn(async move {
+            let state = Arc::new(ReplicaState::new());
+            let mut backoff = Duration::from_millis(100);
+            const MAX_BACKOFF: Duration = Duration::from_secs(30);
+
+            loop {
+                log::info!("Connecting to master at {}", master_addr);
+
+                match TcpStream::connect(&master_addr).await {
+                    Ok(stream) => {
+                        let addr = stream
+                            .peer_addr()
+                            .unwrap_or_else(|_| "0.0.0.0:0".parse().unwrap());
+
+                        let framed = Framed::new(stream, RESP3Codec);
+
+                        let (handle, shutdown_complete) = ConnectionHandle::new_replica(
+                            framed,
+                            addr,
+                            kv_store.clone(),
+                            conn_manager.clone(),
+                            state.clone(),
+                        );
+
+                        if let Err(e) = handle.set_conn_type(ConnectionType::Master).await {
+                            log::error!("Failed to set connection type: {e}");
+                        } else {
+                            backoff = Duration::from_millis(100);
+                            let _ = shutdown_complete.await;
+                            log::warn!("Master connection lost");
+                        }
+                    }
+                    Err(e) => {
+                        log::error!("Failed to connect to master: {e}");
+                    }
+                }
+
+                log::info!("Reconnecting in {:?}...", backoff);
+                tokio::time::sleep(backoff).await;
+                backoff = (backoff * 2).min(MAX_BACKOFF);
+            }
+        });
     }
 }
